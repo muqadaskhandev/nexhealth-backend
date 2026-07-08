@@ -6,9 +6,11 @@ via environment variables and are never hard-coded.
 """
 from __future__ import annotations
 
+import ssl
 from functools import lru_cache
 from typing import Literal
 
+import certifi
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -40,7 +42,17 @@ class Settings(BaseSettings):
     @property
     def db_connect_args(self) -> dict:
         """asyncpg connect args derived from settings (e.g. SSL)."""
-        return {"ssl": True} if self.db_ssl else {}
+        if not self.db_ssl:
+            return {}
+        # Local dev on some networks fails CA verification against Supabase's
+        # pooler cert chain; relax verification only outside production.
+        if self.debug and not self.is_production:
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            return {"ssl": ctx}
+        ctx = ssl.create_default_context(cafile=certifi.where())
+        return {"ssl": ctx}
 
     # JWT / sessions
     jwt_secret: str = "insecure-dev-secret-change-me"

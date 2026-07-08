@@ -1,0 +1,24 @@
+# --- Web framework ---
+fastapi==0.115.5
+uvicorn[standard]==0.32.1
+
+# --- Data / ORM ---
+sqlalchemy[asyncio]==2.0.36
+asyncpg==0.30.0
+alembic==1.14.0
+
+# --- Config / validation ---
+pydantic==2.10.3
+pydantic-settings==2.6.1
+email-validator==2.2.0
+
+# --- Security ---
+argon2-cffi==23.1.0          # password hashing
+pyjwt==2.10.1                # access-token JWT + OIDC id_token decode
+cryptography==44.0.0         # JWKS / RSA verification for OIDC
+
+# --- OAuth / HTTP ---
+httpx==0.28.1
+
+# --- Rate limiting ---
+slowapi==0.1.9

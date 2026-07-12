@@ -6,13 +6,15 @@ against slowapi's module globals; with stringized annotations that resolution
 fails and request bodies are misread as query params. Keeping real annotation
 objects (read via __wrapped__) avoids that.
 """
-from typing import Optional, Tuple
+from datetime import datetime, timedelta, timezone
+from typing import Optional, Tuple, Union
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core import security
 from app.core.cookies import (
     REFRESH_COOKIE,
     clear_auth_cookies,
@@ -20,6 +22,7 @@ from app.core.cookies import (
 )
 from app.core.dependencies import get_current_user
 from app.database import get_db
+from app.models.token import SsoTotpTransaction
 from app.models.user import User
 from app.schemas.auth import (
     ChangePasswordRequest,
@@ -30,12 +33,18 @@ from app.schemas.auth import (
     ResetPasswordRequest,
     SessionOut,
     TotpEnableRequest,
+    TotpRequiredOut,
     TotpSetupOut,
+    TotpVerifyRequest,
     UserOut,
 )
 from app.schemas.location import LocationOut
 from app.services import auth_service, oauth, user_service, totp_service
 from app.services.auth_service import AuthError
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 limiter = Limiter(key_func=get_remote_address)
@@ -63,14 +72,14 @@ async def sso_providers() -> ProvidersOut:
     return ProvidersOut(google=p["google"], azure=p["azure"], okta=p["okta"])
 
 
-@router.post("/login", response_model=UserOut)
+@router.post("/login", response_model=Union[UserOut, TotpRequiredOut])
 @limiter.limit("10/minute")
 async def login(
     request: Request,
     response: Response,
     payload: LoginRequest,
     db: AsyncSession = Depends(get_db),
-) -> UserOut:
+) -> Union[UserOut, TotpRequiredOut]:
     try:
         user = await auth_service.authenticate_password(
             db, email=payload.email, password=payload.password
@@ -78,14 +87,20 @@ async def login(
     except AuthError as exc:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail=exc.message)
 
+    # If user has TOTP enabled, create a transaction token and return it
     if user.totp_enabled:
-        if not payload.totp_code:
-            raise HTTPException(
-                status.HTTP_403_FORBIDDEN,
-                detail="Two-factor authentication required",
-            )
-        if not totp_service.verify_totp(secret=user.totp_secret or "", code=payload.totp_code):
-            raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="Invalid 2FA code")
+        ua, ip = _client_meta(request)
+        raw_tx = security.generate_opaque_token()
+        tx = SsoTotpTransaction(
+            user_id=user.id,
+            token_hash=security.hash_token(raw_tx),
+            expires_at=_now() + timedelta(minutes=10),
+            user_agent=(ua or "")[:400] or None,
+            ip_address=(ip or "")[:64] or None,
+        )
+        db.add(tx)
+        await db.commit()
+        return TotpRequiredOut(totp_required=True, tx=raw_tx)
 
     ua, ip = _client_meta(request)
     session = await auth_service.issue_session(db, user, user_agent=ua, ip_address=ip)
@@ -186,6 +201,55 @@ async def reset_password(
     return MessageOut(message="Password updated. Please log in.")
 
 
+@router.post("/totp/verify", response_model=MessageOut)
+async def totp_verify(
+    payload: TotpVerifyRequest,
+    request: Request,
+    response: Response,
+    tx: str = Query(...),
+    db: AsyncSession = Depends(get_db),
+) -> MessageOut:
+    """Verify TOTP code during login 2FA flow and create session."""
+    from sqlalchemy import select
+
+    tx_token = tx
+    if not tx_token:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Missing transaction token")
+
+    # Look up the transaction
+    tx_hash = security.hash_token(tx_token)
+    result = await db.execute(
+        select(SsoTotpTransaction).where(
+            SsoTotpTransaction.token_hash == tx_hash
+        )
+    )
+    tx = result.scalar_one_or_none()
+
+    if tx is None or tx.completed_at is not None or tx.expires_at <= _now():
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Invalid or expired transaction")
+
+    # Get user and verify TOTP code
+    user = await user_service.get_user_by_id(db, tx.user_id)
+    if user is None or not user.is_active:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="User not found or inactive")
+
+    if not totp_service.verify_totp(secret=user.totp_secret or "", code=payload.code):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="Invalid 2FA code")
+
+    # Mark transaction as completed
+    tx.completed_at = _now()
+    await db.flush()
+
+    # Issue session
+    ua, ip = _client_meta(request)
+    session = await auth_service.issue_session(db, user, user_agent=ua, ip_address=ip)
+    await db.commit()
+
+    # Set cookies on response
+    _apply_session(response, session)
+    return MessageOut(message="2FA verified")
+
+
 @router.post("/totp/setup", response_model=TotpSetupOut)
 async def totp_setup(
     current: User = Depends(get_current_user),
@@ -212,6 +276,25 @@ async def totp_enable(
     current.totp_enabled = True
     await db.commit()
     return MessageOut(message="Two-factor authentication enabled")
+
+
+@router.post("/totp/disable", response_model=MessageOut)
+async def totp_disable(
+    payload: TotpVerifyRequest,
+    current: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> MessageOut:
+    if not current.totp_enabled:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="2FA is not enabled")
+
+    # Verify the TOTP code before disabling
+    if not totp_service.verify_totp(secret=current.totp_secret or "", code=payload.code):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="Invalid 2FA code")
+
+    current.totp_enabled = False
+    current.totp_secret = None
+    await db.commit()
+    return MessageOut(message="Two-factor authentication disabled")
 
 
 @router.post("/change-password", response_model=MessageOut)

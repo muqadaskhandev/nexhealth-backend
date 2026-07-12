@@ -27,7 +27,7 @@ from app.models.staff import (
     PaymentLink,
     WaitlistEntry,
 )
-from app.models.token import PasswordResetToken, RefreshToken
+from app.models.token import PasswordResetToken, RefreshToken, SsoTotpTransaction
 from app.models.user import AccountType, AuthProvider, User, UserRole
 
 __all__ = [
@@ -49,4 +49,5 @@ __all__ = [
     "InviteType",
     "RefreshToken",
     "PasswordResetToken",
+    "SsoTotpTransaction",
 ]

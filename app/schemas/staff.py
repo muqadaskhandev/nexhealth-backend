@@ -1,0 +1,206 @@
+"""Pydantic schemas for staff workflow APIs."""
+from __future__ import annotations
+
+import uuid
+from datetime import date, datetime
+from decimal import Decimal
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
+
+
+class PatientOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    first_name: str
+    last_name: str
+    preferred_name: str | None
+    dob: date | None
+    gender: str
+    email: str
+    phone: str
+    address: str
+    language: str
+    provider_name: str
+    synced: bool
+    archived: bool
+    insurance_data: dict[str, Any]
+    notification_prefs: dict[str, Any]
+    initials: str = ""
+    full_name: str = ""
+
+
+class PatientCreate(BaseModel):
+    first_name: str = Field(min_length=1, max_length=120)
+    last_name: str = Field(min_length=1, max_length=120)
+    preferred_name: str | None = None
+    dob: date | None = None
+    gender: str = ""
+    email: EmailStr | str = ""
+    phone: str = ""
+    address: str = ""
+    language: str = "English"
+    provider_name: str = ""
+    insurance_data: dict[str, Any] | None = None
+    notification_prefs: dict[str, Any] | None = None
+
+
+class PatientUpdate(BaseModel):
+    first_name: str | None = None
+    last_name: str | None = None
+    preferred_name: str | None = None
+    dob: date | None = None
+    gender: str | None = None
+    email: EmailStr | str | None = None
+    phone: str | None = None
+    address: str | None = None
+    language: str | None = None
+    provider_name: str | None = None
+    synced: bool | None = None
+    archived: bool | None = None
+    insurance_data: dict[str, Any] | None = None
+    notification_prefs: dict[str, Any] | None = None
+
+
+class ActivityOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    activity_type: str
+    title: str
+    body: str
+    meta: dict[str, Any]
+    created_at: datetime
+
+
+class AppointmentOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    patient_id: uuid.UUID
+    provider_name: str
+    appointment_type: str
+    starts_at: datetime
+    duration_minutes: int
+    status: str
+    insurance_status: str
+    forms_status: str
+    patient_name: str = ""
+    patient_initials: str = ""
+    patient_dob: str | None = None
+    patient_email: str = ""
+    patient_phone: str = ""
+
+
+class AppointmentCreate(BaseModel):
+    patient_id: uuid.UUID
+    provider_name: str
+    appointment_type: str = "OP1"
+    starts_at: datetime
+    duration_minutes: int = 30
+    status: str = "unconfirmed"
+
+
+class AppointmentUpdate(BaseModel):
+    status: str | None = None
+    insurance_status: str | None = None
+    forms_status: str | None = None
+    starts_at: datetime | None = None
+    duration_minutes: int | None = None
+
+
+class WaitlistOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    patient_id: uuid.UUID
+    provider_name: str
+    appointment_type: str
+    notes: str
+    status: str
+    patient_name: str = ""
+    created_at: datetime
+
+
+class WaitlistCreate(BaseModel):
+    patient_id: uuid.UUID
+    provider_name: str = ""
+    appointment_type: str = ""
+    notes: str = ""
+
+
+class FormTemplateOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    name: str
+    form_type: str
+
+
+class FormSubmissionOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    patient_id: uuid.UUID
+    form_name: str
+    device: str
+    sync_status: str
+    submitted_at: datetime
+    patient_name: str = ""
+    patient_initials: str = ""
+
+
+class SendFormRequest(BaseModel):
+    patient_id: uuid.UUID
+    form_template_id: uuid.UUID
+
+
+class MessageOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    thread_id: uuid.UUID
+    direction: str
+    body: str
+    channel: str
+    sent_at: datetime
+    patient_id: uuid.UUID | None = None
+    patient_name: str = ""
+
+
+class SendMessageRequest(BaseModel):
+    patient_id: uuid.UUID
+    body: str = Field(min_length=1, max_length=2000)
+    channel: str = "sms"
+
+
+class PaymentLinkOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    patient_id: uuid.UUID
+    amount: Decimal
+    description: str
+    status: str
+    created_at: datetime
+    paid_at: datetime | None
+    patient_name: str = ""
+
+
+class PaymentLinkCreate(BaseModel):
+    patient_id: uuid.UUID
+    amount: Decimal = Field(gt=0)
+    description: str = ""
+
+
+class VerifyInsuranceRequest(BaseModel):
+    patient_id: uuid.UUID
+
+
+class DashboardStats(BaseModel):
+    appointments_today: int
+    confirmed_count: int
+    waitlist_count: int
+    pending_forms: int
+    pending_payments: int

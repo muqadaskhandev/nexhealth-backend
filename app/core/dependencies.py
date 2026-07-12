@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.cookies import ACCESS_COOKIE, CSRF_COOKIE
 from app.core.security import decode_access_token
 from app.database import get_db
-from app.models.user import User, UserRole
+from app.models.user import User, UserRole, AccountType
 from app.services import auth_service, user_service
 
 CSRF_HEADER = "x-csrf-token"
@@ -79,9 +79,29 @@ async def get_current_user(
 
 
 async def require_admin(current: User = Depends(get_current_user)) -> User:
+    if current.account_type == AccountType.SUPER_ADMIN:
+        return current
     if current.role != UserRole.ADMIN:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Admin privileges required",
+        )
+    return current
+
+
+async def require_super_admin(current: User = Depends(get_current_user)) -> User:
+    if current.account_type != AccountType.SUPER_ADMIN:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Platform admin privileges required",
+        )
+    return current
+
+
+async def require_practice_user(current: User = Depends(get_current_user)) -> User:
+    if current.account_type != AccountType.PRACTICE:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Practice account required",
         )
     return current

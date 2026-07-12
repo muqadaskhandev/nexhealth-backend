@@ -12,6 +12,8 @@ class LocationOut(BaseModel):
     id: uuid.UUID
     name: str
     address: str
+    ehr_site_id: str | None = None
+    ehr_site_name: str | None = None
 
 
 class SwitchLocationRequest(BaseModel):

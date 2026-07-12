@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, DateTime, Enum, String, func
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, String, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -14,6 +14,7 @@ from app.database import Base
 
 if TYPE_CHECKING:
     from app.models.location import UserLocation
+    from app.models.practice import Practice
     from app.models.token import PasswordResetToken, RefreshToken
 
 
@@ -22,6 +23,13 @@ class UserRole(str, enum.Enum):
 
     ADMIN = "admin"
     MEMBER = "member"
+
+
+class AccountType(str, enum.Enum):
+    """Platform vs practice-scoped accounts."""
+
+    SUPER_ADMIN = "super_admin"
+    PRACTICE = "practice"
 
 
 class AuthProvider(str, enum.Enum):
@@ -53,6 +61,21 @@ class User(Base):
         nullable=False,
         default=UserRole.MEMBER,
     )
+    account_type: Mapped[AccountType] = mapped_column(
+        Enum(
+            AccountType,
+            name="account_type",
+            values_callable=lambda e: [m.value for m in e],
+        ),
+        nullable=False,
+        default=AccountType.PRACTICE,
+    )
+    practice_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("practices.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
     auth_provider: Mapped[AuthProvider] = mapped_column(
         Enum(
             AuthProvider,
@@ -65,6 +88,10 @@ class User(Base):
 
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     email_verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    # TOTP 2FA (required for practice admins after first login)
+    totp_secret: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    totp_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     # Brute-force protection
     failed_login_count: Mapped[int] = mapped_column(default=0, nullable=False)
@@ -86,6 +113,7 @@ class User(Base):
     )
 
     # Relationships
+    practice: Mapped["Practice | None"] = relationship(back_populates="users")
     memberships: Mapped[list["UserLocation"]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
     )

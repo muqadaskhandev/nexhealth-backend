@@ -3,16 +3,50 @@
 Importing this package ensures every model is registered on Base.metadata,
 which Alembic autogenerate and create_all rely on.
 """
+from app.models.ehr_connection import ConnectionMode, EhrConnection, EhrSyncLog
+from app.models.invite import InviteToken, InviteType
 from app.models.location import Location, UserLocation
+from app.models.practice import (
+    DEFAULT_PRODUCTS,
+    EhrSystem,
+    Practice,
+    SubscriptionPlan,
+    SyncStatus,
+)
+from app.models.staff import (
+    ActivityType,
+    Appointment,
+    AppointmentStatus,
+    FormRequest,
+    FormSubmission,
+    FormTemplate,
+    Message,
+    MessageThread,
+    Patient,
+    PatientActivity,
+    PaymentLink,
+    WaitlistEntry,
+)
 from app.models.token import PasswordResetToken, RefreshToken
-from app.models.user import AuthProvider, User, UserRole
+from app.models.user import AccountType, AuthProvider, User, UserRole
 
 __all__ = [
     "User",
     "UserRole",
+    "AccountType",
     "AuthProvider",
     "Location",
     "UserLocation",
+    "Practice",
+    "SubscriptionPlan",
+    "EhrSystem",
+    "SyncStatus",
+    "DEFAULT_PRODUCTS",
+    "EhrConnection",
+    "EhrSyncLog",
+    "ConnectionMode",
+    "InviteToken",
+    "InviteType",
     "RefreshToken",
     "PasswordResetToken",
 ]

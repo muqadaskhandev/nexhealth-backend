@@ -29,10 +29,12 @@ from app.schemas.auth import (
     ProvidersOut,
     ResetPasswordRequest,
     SessionOut,
+    TotpEnableRequest,
+    TotpSetupOut,
     UserOut,
 )
 from app.schemas.location import LocationOut
-from app.services import auth_service, oauth, user_service
+from app.services import auth_service, oauth, user_service, totp_service
 from app.services.auth_service import AuthError
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -75,6 +77,15 @@ async def login(
         )
     except AuthError as exc:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail=exc.message)
+
+    if user.totp_enabled:
+        if not payload.totp_code:
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN,
+                detail="Two-factor authentication required",
+            )
+        if not totp_service.verify_totp(secret=user.totp_secret or "", code=payload.totp_code):
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="Invalid 2FA code")
 
     ua, ip = _client_meta(request)
     session = await auth_service.issue_session(db, user, user_agent=ua, ip_address=ip)
@@ -175,6 +186,34 @@ async def reset_password(
     return MessageOut(message="Password updated. Please log in.")
 
 
+@router.post("/totp/setup", response_model=TotpSetupOut)
+async def totp_setup(
+    current: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> TotpSetupOut:
+    secret = totp_service.generate_totp_secret()
+    current.totp_secret = secret
+    current.totp_enabled = False
+    await db.commit()
+    uri = totp_service.provisioning_uri(secret=secret, email=current.email)
+    return TotpSetupOut(secret=secret, provisioning_uri=uri)
+
+
+@router.post("/totp/enable", response_model=MessageOut)
+async def totp_enable(
+    payload: TotpEnableRequest,
+    current: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> MessageOut:
+    if not current.totp_secret:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Run setup first")
+    if not totp_service.verify_totp(secret=current.totp_secret, code=payload.code):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Invalid code")
+    current.totp_enabled = True
+    await db.commit()
+    return MessageOut(message="Two-factor authentication enabled")
+
+
 @router.post("/change-password", response_model=MessageOut)
 async def change_password(
     payload: ChangePasswordRequest,
@@ -196,12 +235,8 @@ async def change_password(
 
 
 def _deliver_reset_email(email: str, token: str) -> None:
-    """Placeholder for the real email integration (SES/SendGrid/etc.).
-
-    For local development we print the reset link to the server log so the flow
-    is testable without an email provider.
-    """
     from app.config import settings
+    from app.services import email_service
 
     link = f"{settings.frontend_url}/reset-password?token={token}"
-    print(f"[password-reset] {email} -> {link}")
+    email_service.send_password_reset(to=email, reset_url=link)

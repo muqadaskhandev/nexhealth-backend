@@ -13,8 +13,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core import security
 from app.core.dependencies import require_admin
 from app.database import get_db
-from app.models.user import User
-from app.schemas.auth import MessageOut
+from app.models.user import AccountType, User
+from app.schemas.auth import MessageOut, UserOut
 from app.schemas.location import LocationOut
 from app.schemas.user import UserCreate, UserDetail, UserUpdate
 from app.services import auth_service, user_service
@@ -27,33 +27,22 @@ def _to_detail(user: User) -> UserDetail:
         LocationOut.model_validate(m.location)
         for m in sorted(user.memberships, key=lambda m: m.location.name)
     ]
-    return UserDetail(
-        id=user.id,
-        email=user.email,
-        first_name=user.first_name,
-        last_name=user.last_name,
-        full_name=user.full_name,
-        initials=user.initials,
-        role=user.role,
-        auth_provider=user.auth_provider,
-        is_active=user.is_active,
-        email_verified=user.email_verified,
-        locations=locations,
-    )
+    return UserDetail(**UserOut.model_validate(user).model_dump(), locations=locations)
 
 
 @router.get("", response_model=list[UserDetail])
 async def list_users(
-    _: User = Depends(require_admin), db: AsyncSession = Depends(get_db)
+    admin: User = Depends(require_admin), db: AsyncSession = Depends(get_db)
 ) -> list[UserDetail]:
-    users = await user_service.list_users(db)
+    practice_id = admin.practice_id if admin.account_type.value == "practice" else None
+    users = await user_service.list_users(db, practice_id=practice_id)
     return [_to_detail(u) for u in users]
 
 
 @router.post("", response_model=UserDetail, status_code=status.HTTP_201_CREATED)
 async def create_user(
     payload: UserCreate,
-    _: User = Depends(require_admin),
+    admin: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ) -> UserDetail:
     existing = await user_service.get_user_by_email(db, payload.email)
@@ -71,6 +60,8 @@ async def create_user(
         role=payload.role,
         password_hash=password_hash,
         location_ids=payload.location_ids,
+        practice_id=admin.practice_id,
+        account_type=AccountType.PRACTICE,
     )
     await db.commit()
     user = await user_service.get_user_with_locations(db, user.id)

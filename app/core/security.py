@@ -53,6 +53,8 @@ def create_access_token(
     *,
     user_id: uuid.UUID,
     role: str,
+    account_type: str,
+    practice_id: uuid.UUID | None,
     active_location_id: uuid.UUID | None,
     session_id: uuid.UUID,
 ) -> str:
@@ -66,6 +68,8 @@ def create_access_token(
     payload: dict[str, Any] = {
         "sub": str(user_id),
         "role": role,
+        "acct": account_type,
+        "pid": str(practice_id) if practice_id else None,
         "loc": str(active_location_id) if active_location_id else None,
         "sid": str(session_id),
         "type": ACCESS_TOKEN_TYPE,

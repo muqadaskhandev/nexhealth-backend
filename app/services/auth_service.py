@@ -117,6 +117,8 @@ async def issue_session(
     access = security.create_access_token(
         user_id=user.id,
         role=user.role.value,
+        account_type=user.account_type.value,
+        practice_id=user.practice_id,
         active_location_id=active_location_id,
         session_id=refresh_row.id,
     )
@@ -186,6 +188,8 @@ async def rotate_refresh_token(
     access = security.create_access_token(
         user_id=user.id,
         role=user.role.value,
+        account_type=user.account_type.value,
+        practice_id=user.practice_id,
         active_location_id=active_location_id,
         session_id=new_row.id,
     )
@@ -235,6 +239,8 @@ async def issue_access_for_location(
     return security.create_access_token(
         user_id=user.id,
         role=user.role.value,
+        account_type=user.account_type.value,
+        practice_id=user.practice_id,
         active_location_id=location_id,
         session_id=session_id,
     )

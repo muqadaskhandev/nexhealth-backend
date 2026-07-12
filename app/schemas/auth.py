@@ -3,19 +3,52 @@ from __future__ import annotations
 
 import uuid
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from app.models.user import AuthProvider, UserRole
+from app.models.user import AccountType, AuthProvider, UserRole
 from app.schemas.location import LocationOut
 
 
+def _normalize_login_email(value: str) -> str:
+    email = value.strip().lower()
+    if "@" not in email or email.startswith("@") or email.endswith("@"):
+        raise ValueError("invalid email address")
+    return email
+
+
 class LoginRequest(BaseModel):
-    email: EmailStr
+    # Plain str — dev seed accounts may use reserved TLDs like `.local`.
+    email: str = Field(min_length=3, max_length=320)
     password: str = Field(min_length=1, max_length=200)
+    totp_code: str | None = Field(default=None, min_length=6, max_length=6)
+
+    @field_validator("email")
+    @classmethod
+    def normalize_email(cls, value: str) -> str:
+        return _normalize_login_email(value)
+
+
+class TotpSetupOut(BaseModel):
+    secret: str
+    provisioning_uri: str
+    qr_message: str = "Scan this URI in Google Authenticator or Authy"
+
+
+class TotpEnableRequest(BaseModel):
+    code: str = Field(min_length=6, max_length=6)
+
+
+class TotpVerifyRequest(BaseModel):
+    code: str = Field(min_length=6, max_length=6)
 
 
 class ForgotPasswordRequest(BaseModel):
-    email: EmailStr
+    email: str = Field(min_length=3, max_length=320)
+
+    @field_validator("email")
+    @classmethod
+    def normalize_email(cls, value: str) -> str:
+        return _normalize_login_email(value)
 
 
 class ResetPasswordRequest(BaseModel):
@@ -32,15 +65,18 @@ class UserOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
-    email: EmailStr
+    email: str
     first_name: str
     last_name: str
     full_name: str
     initials: str
     role: UserRole
+    account_type: AccountType
     auth_provider: AuthProvider
     is_active: bool
     email_verified: bool
+    totp_enabled: bool
+    practice_id: uuid.UUID | None = None
 
 
 class SessionOut(BaseModel):

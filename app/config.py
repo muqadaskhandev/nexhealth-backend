@@ -86,6 +86,31 @@ class Settings(BaseSettings):
     # Seed
     seed_admin_email: str = "admin@betterdental.com"
     seed_admin_password: str = "ChangeMe123!"
+    seed_super_admin_email: str = "platform@nexhealth.dev"
+    seed_super_admin_password: str = "ChangeMe123!"
+
+    # AWS SES
+    aws_region: str = "us-east-1"
+    aws_access_key_id: str = ""
+    aws_secret_access_key: str = ""
+    ses_from_email: str = "noreply@example.com"
+    ses_from_name: str = "NextHealth"
+    # When false, emails are printed to the server log (local dev).
+    ses_enabled: bool = False
+
+    invite_ttl_hours: int = 72
+
+    # EHR Synchronizer — encrypt credentials at rest (Fernet key, base64 url-safe 32 bytes).
+    ehr_credentials_key: str = ""
+    # Must be false in production — only real EHR APIs are called.
+    ehr_sync_demo_mode: bool = False
+
+    # Seed only platform accounts + empty practice shell. No Simpson/demo patients.
+    seed_demo_data: bool = False
+
+    # Open Dental — platform developer key (one per NextHealth); customer key is per clinic.
+    open_dental_developer_key: str = ""
+    open_dental_api_base_url: str = "https://api.opendental.com"
 
     @property
     def cors_origins(self) -> list[str]:

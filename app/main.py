@@ -11,7 +11,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
 from app.config import settings
-from app.routers import auth, locations, sso, users
+from app.routers import auth, invites, locations, platform, practice, staff, sso, users
 
 # Import models so metadata is populated (used by health check / migrations).
 from app import models  # noqa: F401
@@ -69,6 +69,10 @@ app.include_router(auth.router)
 app.include_router(sso.router)
 app.include_router(locations.router)
 app.include_router(users.router)
+app.include_router(platform.router)
+app.include_router(practice.router)
+app.include_router(invites.router)
+app.include_router(staff.router)
 
 
 @app.exception_handler(Exception)

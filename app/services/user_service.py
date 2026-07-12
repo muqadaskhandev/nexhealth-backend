@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.models.location import Location, UserLocation
-from app.models.user import AuthProvider, User, UserRole
+from app.models.user import AccountType, AuthProvider, User, UserRole
 
 
 async def get_user_by_id(db: AsyncSession, user_id: uuid.UUID) -> User | None:
@@ -73,6 +73,8 @@ async def create_user(
     password_hash: str | None = None,
     auth_provider: AuthProvider = AuthProvider.PASSWORD,
     email_verified: bool = False,
+    account_type: AccountType = AccountType.PRACTICE,
+    practice_id: uuid.UUID | None = None,
     location_ids: Sequence[uuid.UUID] | None = None,
 ) -> User:
     user = User(
@@ -83,6 +85,8 @@ async def create_user(
         password_hash=password_hash,
         auth_provider=auth_provider,
         email_verified=email_verified,
+        account_type=account_type,
+        practice_id=practice_id,
     )
     db.add(user)
     await db.flush()  # assign user.id
@@ -118,15 +122,23 @@ async def set_user_locations(
     await db.flush()
 
 
-async def list_users(db: AsyncSession) -> list[User]:
-    result = await db.execute(
+async def list_users(db: AsyncSession, *, practice_id: uuid.UUID | None = None) -> list[User]:
+    q = (
         select(User)
         .options(selectinload(User.memberships).selectinload(UserLocation.location))
         .order_by(User.created_at)
     )
+    if practice_id is not None:
+        q = q.where(User.practice_id == practice_id)
+    result = await db.execute(q)
     return list(result.scalars().all())
 
 
-async def list_locations(db: AsyncSession) -> list[Location]:
-    result = await db.execute(select(Location).order_by(Location.name))
+async def list_locations(
+    db: AsyncSession, *, practice_id: uuid.UUID | None = None
+) -> list[Location]:
+    q = select(Location).order_by(Location.name)
+    if practice_id is not None:
+        q = q.where(Location.practice_id == practice_id)
+    result = await db.execute(q)
     return list(result.scalars().all())

@@ -20,12 +20,16 @@ class LoginRequest(BaseModel):
     # Plain str — dev seed accounts may use reserved TLDs like `.local`.
     email: str = Field(min_length=3, max_length=320)
     password: str = Field(min_length=1, max_length=200)
-    totp_code: str | None = Field(default=None, min_length=6, max_length=6)
 
     @field_validator("email")
     @classmethod
     def normalize_email(cls, value: str) -> str:
         return _normalize_login_email(value)
+
+
+class TotpRequiredOut(BaseModel):
+    totp_required: bool = True
+    tx: str
 
 
 class TotpSetupOut(BaseModel):

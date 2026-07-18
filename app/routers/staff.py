@@ -76,10 +76,11 @@ async def stats(ctx: StaffContext = Depends(get_staff_context), db: AsyncSession
 async def list_patients(
     q: str = "",
     archived: bool = False,
+    all_locations: bool = False,
     ctx: StaffContext = Depends(get_staff_context),
     db: AsyncSession = Depends(get_db),
 ):
-    rows = await staff_service.list_patients(db, ctx, q=q, archived=archived)
+    rows = await staff_service.list_patients(db, ctx, q=q, archived=archived, all_locations=all_locations)
     return [_patient_out(p) for p in rows]
 
 
@@ -161,11 +162,15 @@ async def merge_patients(
 @router.get("/api/appointments", response_model=list[AppointmentOut])
 async def list_appointments(
     date: str | None = Query(default=None, description="YYYY-MM-DD"),
+    patient_id: uuid.UUID | None = Query(default=None),
     ctx: StaffContext = Depends(get_staff_context),
     db: AsyncSession = Depends(get_db),
 ):
-    day = datetime.fromisoformat(date) if date else datetime.now().astimezone()
-    rows = await staff_service.list_appointments(db, ctx, day=day)
+    if patient_id:
+        rows = await staff_service.list_appointments(db, ctx, patient_id=patient_id)
+    else:
+        day = datetime.fromisoformat(date) if date else datetime.now().astimezone()
+        rows = await staff_service.list_appointments(db, ctx, day=day)
     return [_appt_out(a, p) for a, p in rows]
 
 
@@ -286,9 +291,11 @@ async def send_form(
 # ── Communications ───────────────────────────────────────────────────────────
 @router.get("/api/messages", response_model=list[MessageOut])
 async def list_messages(
-    ctx: StaffContext = Depends(get_staff_context), db: AsyncSession = Depends(get_db)
+    patient_id: uuid.UUID | None = Query(default=None),
+    ctx: StaffContext = Depends(get_staff_context),
+    db: AsyncSession = Depends(get_db),
 ):
-    rows = await staff_service.list_messages(db, ctx)
+    rows = await staff_service.list_messages(db, ctx, patient_id=patient_id)
     return [
         MessageOut(
             id=m.id,

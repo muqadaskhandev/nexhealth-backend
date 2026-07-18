@@ -67,13 +67,19 @@ async def _log_activity(
 
 # ── Patients ─────────────────────────────────────────────────────────────────
 async def list_patients(
-    db: AsyncSession, ctx: StaffContext, *, q: str = "", archived: bool = False
+    db: AsyncSession,
+    ctx: StaffContext,
+    *,
+    q: str = "",
+    archived: bool = False,
+    all_locations: bool = False,
 ) -> list[Patient]:
     stmt = select(Patient).where(
         Patient.practice_id == ctx.practice_id,
-        Patient.location_id == ctx.location_id,
         Patient.archived == archived,
     )
+    if not all_locations:
+        stmt = stmt.where(Patient.location_id == ctx.location_id)
     if q:
         like = f"%{q.strip().lower()}%"
         stmt = stmt.where(
@@ -182,7 +188,11 @@ async def list_patient_activity(
 
 # ── Appointments ─────────────────────────────────────────────────────────────
 async def list_appointments(
-    db: AsyncSession, ctx: StaffContext, *, day: datetime | None = None
+    db: AsyncSession,
+    ctx: StaffContext,
+    *,
+    day: datetime | None = None,
+    patient_id: uuid.UUID | None = None,
 ) -> list[tuple[Appointment, Patient]]:
     stmt = (
         select(Appointment, Patient)
@@ -192,7 +202,9 @@ async def list_appointments(
             Appointment.location_id == ctx.location_id,
         )
     )
-    if day:
+    if patient_id:
+        stmt = stmt.where(Appointment.patient_id == patient_id)
+    elif day:
         start = datetime.combine(day.date(), time.min, tzinfo=timezone.utc)
         end = datetime.combine(day.date(), time.max, tzinfo=timezone.utc)
         stmt = stmt.where(Appointment.starts_at >= start, Appointment.starts_at <= end)
@@ -336,9 +348,9 @@ async def send_form(
 
 # ── Messages ─────────────────────────────────────────────────────────────────
 async def list_messages(
-    db: AsyncSession, ctx: StaffContext
+    db: AsyncSession, ctx: StaffContext, *, patient_id: uuid.UUID | None = None
 ) -> list[tuple[Message, Patient]]:
-    result = await db.execute(
+    stmt = (
         select(Message, Patient)
         .join(MessageThread, MessageThread.id == Message.thread_id)
         .join(Patient, Patient.id == MessageThread.patient_id)
@@ -346,9 +358,11 @@ async def list_messages(
             MessageThread.practice_id == ctx.practice_id,
             MessageThread.location_id == ctx.location_id,
         )
-        .order_by(Message.sent_at.desc())
-        .limit(100)
     )
+    if patient_id:
+        stmt = stmt.where(MessageThread.patient_id == patient_id)
+    stmt = stmt.order_by(Message.sent_at.desc()).limit(100)
+    result = await db.execute(stmt)
     return list(result.all())
 
 

@@ -49,6 +49,15 @@ async def create_user(
     if existing is not None:
         raise HTTPException(status.HTTP_409_CONFLICT, detail="Email already in use")
 
+    if admin.practice_id is not None:
+        practice_locs = await user_service.list_locations(db, practice_id=admin.practice_id)
+        allowed = {loc.id for loc in practice_locs}
+        if not set(payload.location_ids).issubset(allowed):
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                detail="One or more locations do not belong to this practice",
+            )
+
     password_hash = (
         security.hash_password(payload.password) if payload.password else None
     )
@@ -100,6 +109,21 @@ async def update_user(
             # Deactivation kills all sessions immediately.
             await auth_service._revoke_user_sessions(db, user.id)
     if payload.location_ids is not None:
+        if len(payload.location_ids) == 0:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                detail="Select at least one location",
+            )
+        if admin.practice_id is not None:
+            practice_locs = await user_service.list_locations(
+                db, practice_id=admin.practice_id
+            )
+            allowed = {loc.id for loc in practice_locs}
+            if not set(payload.location_ids).issubset(allowed):
+                raise HTTPException(
+                    status.HTTP_400_BAD_REQUEST,
+                    detail="One or more locations do not belong to this practice",
+                )
         await user_service.set_user_locations(db, user, payload.location_ids)
 
     await db.commit()

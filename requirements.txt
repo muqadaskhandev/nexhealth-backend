@@ -21,6 +21,7 @@ boto3==1.35.76               # AWS SES email
 
 # --- OAuth / HTTP ---
 httpx==0.28.1
+python-multipart==0.0.32
 
 # --- Rate limiting ---
 slowapi==0.1.9

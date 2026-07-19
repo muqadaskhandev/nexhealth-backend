@@ -6,12 +6,14 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
 from app.config import settings
 from app.routers import auth, invites, locations, platform, practice, staff, sso, users
+from app.services.logo_storage import logos_dir
 
 # Import models so metadata is populated (used by health check / migrations).
 from app import models  # noqa: F401
@@ -22,6 +24,7 @@ async def lifespan(app: FastAPI):
     # Fail fast on insecure production config.
     if settings.is_production:
         settings.validate_for_production()
+    logos_dir()  # ensure upload folder exists
     yield
 
 
@@ -73,6 +76,9 @@ app.include_router(platform.router)
 app.include_router(practice.router)
 app.include_router(invites.router)
 app.include_router(staff.router)
+
+# Local logo uploads (dev / single-node). Production would use S3/CDN.
+app.mount("/uploads", StaticFiles(directory=str(logos_dir().parent)), name="uploads")
 
 
 @app.exception_handler(Exception)

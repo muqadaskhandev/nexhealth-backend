@@ -4,9 +4,10 @@ from __future__ import annotations
 import enum
 import uuid
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import DateTime, Enum, ForeignKey, String, func
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -33,6 +34,9 @@ class InviteToken(Base):
         Enum(InviteType, name="invite_type", values_callable=lambda e: [m.value for m in e]),
         nullable=False,
     )
+    # Staff invites: admin | member. Practice-admin invites always become admin.
+    role: Mapped[str] = mapped_column(String(20), nullable=False, default="member")
+    location_ids: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
     token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     accepted_at: Mapped[datetime | None] = mapped_column(

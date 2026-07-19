@@ -119,6 +119,9 @@ async def seed() -> None:
             if admin.practice_id is None:
                 admin.practice_id = practice.id
                 admin.account_type = AccountType.PRACTICE
+            # Keep admin on every practice location so location switching works locally.
+            if all_ids:
+                await user_service.set_user_locations(db, admin, all_ids)
             print(f"[seed] practice admin {admin.email} already exists")
 
         if settings.seed_demo_data:

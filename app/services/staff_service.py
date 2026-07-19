@@ -120,6 +120,7 @@ async def create_patient(db: AsyncSession, ctx: StaffContext, data: PatientCreat
         address=data.address,
         language=data.language,
         provider_name=data.provider_name,
+        synced=False,
         insurance_data=data.insurance_data or {"status": "unknown", "name": "Unknown"},
         notification_prefs=data.notification_prefs or {},
     )

@@ -30,6 +30,13 @@ class Location(Base):
     )
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     address: Mapped[str] = mapped_column(String(400), nullable=False, default="")
+    address_line2: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    city: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+    state: Mapped[str] = mapped_column(String(80), nullable=False, default="")
+    zip_code: Mapped[str] = mapped_column(String(20), nullable=False, default="")
+    phone: Mapped[str] = mapped_column(String(40), nullable=False, default="")
+    email: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    logo_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     ehr_site_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
     ehr_site_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
     created_at: Mapped[datetime] = mapped_column(

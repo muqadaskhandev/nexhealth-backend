@@ -73,6 +73,10 @@ async def create_practice(
         practice_id=practice.id,
         name=loc_name,
         address=address.strip() or practice.address,
+        city=city.strip(),
+        state=state.strip(),
+        zip_code=zip_code.strip(),
+        phone=phone.strip(),
     )
     db.add(location)
     await db.flush()
@@ -120,9 +124,45 @@ async def create_location_for_practice(
     *,
     name: str,
     address: str = "",
+    address_line2: str = "",
+    city: str = "",
+    state: str = "",
+    zip_code: str = "",
+    phone: str = "",
+    email: str = "",
 ) -> Location:
-    location = Location(practice_id=practice.id, name=name.strip(), address=address.strip())
+    location = Location(
+        practice_id=practice.id,
+        name=name.strip(),
+        address=address.strip(),
+        address_line2=address_line2.strip(),
+        city=city.strip(),
+        state=state.strip(),
+        zip_code=zip_code.strip(),
+        phone=phone.strip(),
+        email=email.strip(),
+    )
     db.add(location)
+    await db.flush()
+    return location
+
+
+async def get_practice_location(
+    db: AsyncSession, practice_id: uuid.UUID, location_id: uuid.UUID
+) -> Location | None:
+    result = await db.execute(
+        select(Location).where(
+            Location.id == location_id,
+            Location.practice_id == practice_id,
+        )
+    )
+    return result.scalar_one_or_none()
+
+
+async def update_location(db: AsyncSession, location: Location, **fields) -> Location:
+    for key, value in fields.items():
+        if value is not None and hasattr(location, key):
+            setattr(location, key, value.strip() if isinstance(value, str) else value)
     await db.flush()
     return location
 

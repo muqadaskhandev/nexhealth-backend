@@ -9,7 +9,8 @@ services:
       POSTGRES_PASSWORD: nexhealth
       POSTGRES_DB: nexhealth
     ports:
-      - "5432:5432"
+      # Host 5432 is often taken by system Postgres; use 5434 for local NextHealth.
+      - "5434:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:

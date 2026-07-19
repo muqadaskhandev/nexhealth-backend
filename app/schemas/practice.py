@@ -71,6 +71,12 @@ class EhrConnectRequest(BaseModel):
 class LocationCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     address: str = ""
+    address_line2: str = ""
+    city: str = ""
+    state: str = ""
+    zip_code: str = ""
+    phone: str = ""
+    email: str = ""
 
 
 class InvitePreview(BaseModel):
@@ -91,5 +97,5 @@ class StaffInviteRequest(BaseModel):
     email: EmailStr
     first_name: str = Field(min_length=1, max_length=120)
     last_name: str = Field(min_length=1, max_length=120)
-    role: str = "member"
-    location_ids: list[uuid.UUID] = []
+    role: str = Field(default="member", pattern="^(admin|member)$")
+    location_ids: list[uuid.UUID] = Field(min_length=1)

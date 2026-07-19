@@ -18,7 +18,7 @@ class UserCreate(BaseModel):
     # Optional: if omitted, the user is created without a password and must use
     # the "forgot password" flow or SSO to set one.
     password: str | None = Field(default=None, min_length=8, max_length=200)
-    location_ids: list[uuid.UUID] = Field(default_factory=list)
+    location_ids: list[uuid.UUID] = Field(min_length=1)
 
 
 class UserUpdate(BaseModel):

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
@@ -28,8 +29,16 @@ async def create_invite(
     last_name: str,
     invite_type: InviteType,
     inviter_name: str = "NextHealth",
+    role: str = "member",
+    location_ids: Sequence[uuid.UUID] | None = None,
 ) -> str:
     raw = security.generate_opaque_token()
+    loc_ids = [str(x) for x in (location_ids or [])]
+    stored_role = (
+        "admin"
+        if invite_type == InviteType.PRACTICE_ADMIN
+        else ("admin" if role == "admin" else "member")
+    )
     db.add(
         InviteToken(
             practice_id=practice_id,
@@ -37,6 +46,8 @@ async def create_invite(
             first_name=first_name.strip(),
             last_name=last_name.strip(),
             invite_type=invite_type,
+            role=stored_role,
+            location_ids=loc_ids,
             token_hash=security.hash_token(raw),
             expires_at=_now() + timedelta(hours=settings.invite_ttl_hours),
         )
@@ -78,13 +89,14 @@ async def accept_invite(
     *,
     password: str,
 ):
-    from app.models.user import AccountType, AuthProvider, User
+    from app.models.user import AccountType, AuthProvider
+    from app.services import practice_service
 
-    role = (
-        UserRole.ADMIN
-        if invite.invite_type == InviteType.PRACTICE_ADMIN
-        else UserRole.MEMBER
-    )
+    if invite.invite_type == InviteType.PRACTICE_ADMIN:
+        role = UserRole.ADMIN
+    else:
+        role = UserRole.ADMIN if invite.role == "admin" else UserRole.MEMBER
+
     user = await user_service.create_user(
         db,
         email=invite.email,
@@ -98,12 +110,25 @@ async def accept_invite(
         practice_id=invite.practice_id,
     )
 
-    # Grant access to all practice locations.
-    from app.services import practice_service
+    practice_locations = await practice_service.list_practice_locations(
+        db, invite.practice_id
+    )
+    practice_loc_ids = {loc.id for loc in practice_locations}
 
-    locations = await practice_service.list_practice_locations(db, invite.practice_id)
-    if locations:
-        await user_service.set_user_locations(db, user, [loc.id for loc in locations])
+    if invite.invite_type == InviteType.PRACTICE_ADMIN:
+        # Practice admins get every office.
+        granted = list(practice_loc_ids)
+    else:
+        requested = []
+        for raw in invite.location_ids or []:
+            try:
+                requested.append(uuid.UUID(str(raw)))
+            except ValueError:
+                continue
+        granted = [lid for lid in requested if lid in practice_loc_ids]
+
+    if granted:
+        await user_service.set_user_locations(db, user, granted)
 
     invite.accepted_at = _now()
     await db.flush()

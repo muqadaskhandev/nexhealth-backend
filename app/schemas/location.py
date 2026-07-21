@@ -21,6 +21,8 @@ class LocationOut(BaseModel):
     logo_url: str | None = None
     ehr_site_id: str | None = None
     ehr_site_name: str | None = None
+    separate_by_patient_type: bool = True
+    allow_cancellations_for_unmapped: bool = False
 
 
 class SwitchLocationRequest(BaseModel):
@@ -36,6 +38,8 @@ class LocationUpdate(BaseModel):
     zip_code: str | None = None
     phone: str | None = None
     email: str | None = None
+    separate_by_patient_type: bool | None = None
+    allow_cancellations_for_unmapped: bool | None = None
 
 
 class LogoCopyRequest(BaseModel):

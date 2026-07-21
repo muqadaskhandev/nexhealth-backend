@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, ForeignKey, String, UniqueConstraint, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, String, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -39,6 +39,8 @@ class Location(Base):
     logo_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     ehr_site_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
     ehr_site_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    separate_by_patient_type: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    allow_cancellations_for_unmapped: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

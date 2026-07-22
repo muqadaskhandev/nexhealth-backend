@@ -12,7 +12,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
 from app.config import settings
-from app.routers import appointment_types, auth, invites, locations, platform, practice, staff, sso, users
+from app.routers import appointment_types, auth, invites, locations, platform, practice, providers, staff, sso, users
 from app.services.logo_storage import logos_dir
 
 # Import models so metadata is populated (used by health check / migrations).
@@ -77,6 +77,7 @@ app.include_router(practice.router)
 app.include_router(invites.router)
 app.include_router(staff.router)
 app.include_router(appointment_types.router)
+app.include_router(providers.router)
 
 # Local logo uploads (dev / single-node). Production would use S3/CDN.
 app.mount("/uploads", StaticFiles(directory=str(logos_dir().parent)), name="uploads")

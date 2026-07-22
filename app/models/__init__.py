@@ -14,6 +14,7 @@ from app.models.practice import (
     SubscriptionPlan,
     SyncStatus,
 )
+from app.models.providers import AvailabilitySlot, Operatory, Provider, ProviderStatus, RepeatMode
 from app.models.staff import (
     ActivityType,
     Appointment,

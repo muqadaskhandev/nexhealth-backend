@@ -38,15 +38,18 @@ class Settings(BaseSettings):
     # Require TLS to the database. Leave false for a local Postgres (no SSL);
     # set true for managed Postgres (Supabase, AWS RDS) which mandate SSL.
     db_ssl: bool = False
+    # Verify the DB TLS certificate. Supabase Session pooler often fails with
+    # CERTIFICATE_VERIFY_FAILED (self-signed in chain) on Render — set false
+    # there while keeping DB_SSL=true so traffic stays encrypted.
+    db_ssl_verify: bool = True
 
     @property
     def db_connect_args(self) -> dict:
         """asyncpg connect args derived from settings (e.g. SSL)."""
         if not self.db_ssl:
             return {}
-        # Local dev on some networks fails CA verification against Supabase's
-        # pooler cert chain; relax verification only outside production.
-        if self.debug and not self.is_production:
+        # Encrypt without CA verification when requested (or in local debug).
+        if not self.db_ssl_verify or (self.debug and not self.is_production):
             ctx = ssl.create_default_context()
             ctx.check_hostname = False
             ctx.verify_mode = ssl.CERT_NONE

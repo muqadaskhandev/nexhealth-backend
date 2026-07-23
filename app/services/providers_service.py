@@ -7,8 +7,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.staff_context import StaffContext
-from app.models.providers import AvailabilitySlot, Operatory, Provider, ProviderStatus, RepeatMode
+from app.models.providers import AvailabilityBlock, AvailabilitySlot, Operatory, Provider, ProviderStatus, RepeatMode
 from app.schemas.providers import (
+    AvailabilityBlockCreate,
+    AvailabilityBlockUpdate,
     AvailabilitySlotCreate,
     AvailabilitySlotUpdate,
     OperatoryCreate,
@@ -221,3 +223,78 @@ async def clone_availability_slot(
     db.add(clone)
     await db.flush()
     return clone
+
+
+# ── Availability blocks ──────────────────────────────────────────────────────
+async def list_availability_blocks(
+    db: AsyncSession, ctx: StaffContext, provider_id: uuid.UUID | None = None
+) -> list[AvailabilityBlock]:
+    query = select(AvailabilityBlock).where(
+        AvailabilityBlock.practice_id == ctx.practice_id, AvailabilityBlock.location_id == ctx.location_id
+    )
+    if provider_id is not None:
+        query = query.where(AvailabilityBlock.provider_id == provider_id)
+    result = await db.execute(query.order_by(AvailabilityBlock.starts_at))
+    return list(result.scalars().all())
+
+
+async def get_availability_block(
+    db: AsyncSession, ctx: StaffContext, block_id: uuid.UUID
+) -> AvailabilityBlock | None:
+    block = await db.get(AvailabilityBlock, block_id)
+    if block is None or block.practice_id != ctx.practice_id or block.location_id != ctx.location_id:
+        return None
+    return block
+
+
+async def create_availability_block(
+    db: AsyncSession, ctx: StaffContext, data: AvailabilityBlockCreate
+) -> AvailabilityBlock:
+    provider = await get_provider(db, ctx, data.provider_id)
+    if provider is None:
+        raise ValueError("Provider not found")
+    if data.ends_at <= data.starts_at:
+        raise ValueError("End time must be after start time")
+    if data.operatory_id is not None:
+        operatory = await get_operatory(db, ctx, data.operatory_id)
+        if operatory is None:
+            raise ValueError("Operatory not found")
+
+    block = AvailabilityBlock(
+        practice_id=ctx.practice_id,
+        location_id=ctx.location_id,
+        provider_id=data.provider_id,
+        operatory_id=data.operatory_id,
+        starts_at=data.starts_at,
+        ends_at=data.ends_at,
+        notes=data.notes,
+    )
+    db.add(block)
+    await db.flush()
+    return block
+
+
+async def update_availability_block(
+    db: AsyncSession, ctx: StaffContext, block: AvailabilityBlock, data: AvailabilityBlockUpdate
+) -> AvailabilityBlock:
+    if data.operatory_id is not None:
+        operatory = await get_operatory(db, ctx, data.operatory_id)
+        if operatory is None:
+            raise ValueError("Operatory not found")
+        block.operatory_id = data.operatory_id
+    if data.starts_at is not None:
+        block.starts_at = data.starts_at
+    if data.ends_at is not None:
+        block.ends_at = data.ends_at
+    if data.notes is not None:
+        block.notes = data.notes
+
+    if block.ends_at <= block.starts_at:
+        raise ValueError("End time must be after start time")
+
+    await db.flush()
+    return block
+
+
+async def delete_availability_block(db: AsyncSession, block: AvailabilityBlock) -> None:
+    await db.delete(block)

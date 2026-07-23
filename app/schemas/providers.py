@@ -94,3 +94,30 @@ class AvailabilitySlotUpdate(BaseModel):
     end_time: time | None = None
     use_provider_defaults: bool | None = None
     appointment_type_ids: list[str] | None = None
+
+
+class AvailabilityBlockOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    provider_id: uuid.UUID
+    operatory_id: uuid.UUID | None
+    starts_at: datetime
+    ends_at: datetime
+    notes: str
+    created_at: datetime
+
+
+class AvailabilityBlockCreate(BaseModel):
+    provider_id: uuid.UUID
+    operatory_id: uuid.UUID | None = None
+    starts_at: datetime
+    ends_at: datetime
+    notes: str = ""
+
+
+class AvailabilityBlockUpdate(BaseModel):
+    operatory_id: uuid.UUID | None = None
+    starts_at: datetime | None = None
+    ends_at: datetime | None = None
+    notes: str | None = None

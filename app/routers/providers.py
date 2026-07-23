@@ -9,6 +9,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.staff_context import StaffContext, get_staff_context
 from app.database import get_db
 from app.schemas.providers import (
+    AvailabilityBlockCreate,
+    AvailabilityBlockOut,
+    AvailabilityBlockUpdate,
     AvailabilitySlotCreate,
     AvailabilitySlotOut,
     AvailabilitySlotUpdate,
@@ -184,3 +187,59 @@ async def clone_availability_slot(
     clone = await providers_service.clone_availability_slot(db, ctx, slot)
     await db.commit()
     return AvailabilitySlotOut.model_validate(clone)
+
+
+# ── Availability blocks ──────────────────────────────────────────────────────
+@router.get("/api/availability-blocks", response_model=list[AvailabilityBlockOut])
+async def list_availability_blocks(
+    provider_id: uuid.UUID | None = Query(default=None),
+    ctx: StaffContext = Depends(get_staff_context),
+    db: AsyncSession = Depends(get_db),
+):
+    rows = await providers_service.list_availability_blocks(db, ctx, provider_id)
+    return [AvailabilityBlockOut.model_validate(r) for r in rows]
+
+
+@router.post("/api/availability-blocks", response_model=AvailabilityBlockOut, status_code=status.HTTP_201_CREATED)
+async def create_availability_block(
+    payload: AvailabilityBlockCreate,
+    ctx: StaffContext = Depends(get_staff_context),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        block = await providers_service.create_availability_block(db, ctx, payload)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+    await db.commit()
+    return AvailabilityBlockOut.model_validate(block)
+
+
+@router.patch("/api/availability-blocks/{block_id}", response_model=AvailabilityBlockOut)
+async def update_availability_block(
+    block_id: uuid.UUID,
+    payload: AvailabilityBlockUpdate,
+    ctx: StaffContext = Depends(get_staff_context),
+    db: AsyncSession = Depends(get_db),
+):
+    block = await providers_service.get_availability_block(db, ctx, block_id)
+    if block is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Availability block not found")
+    try:
+        block = await providers_service.update_availability_block(db, ctx, block, payload)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+    await db.commit()
+    return AvailabilityBlockOut.model_validate(block)
+
+
+@router.delete("/api/availability-blocks/{block_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_availability_block(
+    block_id: uuid.UUID,
+    ctx: StaffContext = Depends(get_staff_context),
+    db: AsyncSession = Depends(get_db),
+):
+    block = await providers_service.get_availability_block(db, ctx, block_id)
+    if block is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Availability block not found")
+    await providers_service.delete_availability_block(db, block)
+    await db.commit()

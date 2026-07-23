@@ -41,6 +41,8 @@ class Provider(Base):
     )
     default_appointment_type_ids: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     default_insurances: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    appointment_type_durations: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    avatar_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

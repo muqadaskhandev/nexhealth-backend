@@ -24,6 +24,7 @@ class LocationOut(BaseModel):
     separate_by_patient_type: bool = True
     allow_cancellations_for_unmapped: bool = False
     set_availability_by_operatory: bool = False
+    ask_for_insurance: bool = False
 
 
 class SwitchLocationRequest(BaseModel):
@@ -42,6 +43,7 @@ class LocationUpdate(BaseModel):
     separate_by_patient_type: bool | None = None
     allow_cancellations_for_unmapped: bool | None = None
     set_availability_by_operatory: bool | None = None
+    ask_for_insurance: bool | None = None
 
 
 class LogoCopyRequest(BaseModel):

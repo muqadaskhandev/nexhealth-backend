@@ -16,6 +16,8 @@ class ProviderOut(BaseModel):
     status: str
     default_appointment_type_ids: list[str]
     default_insurances: list[str]
+    appointment_type_durations: dict[str, int]
+    avatar_url: str | None
     created_at: datetime
 
 
@@ -25,6 +27,7 @@ class ProviderCreate(BaseModel):
     status: str = "active"
     default_appointment_type_ids: list[str] = Field(default_factory=list)
     default_insurances: list[str] = Field(default_factory=list)
+    appointment_type_durations: dict[str, int] = Field(default_factory=dict)
 
 
 class ProviderUpdate(BaseModel):
@@ -33,6 +36,7 @@ class ProviderUpdate(BaseModel):
     status: str | None = None
     default_appointment_type_ids: list[str] | None = None
     default_insurances: list[str] | None = None
+    appointment_type_durations: dict[str, int] | None = None
 
 
 class OperatoryOut(BaseModel):

@@ -46,6 +46,7 @@ async def create_provider(db: AsyncSession, ctx: StaffContext, data: ProviderCre
         status=ProviderStatus(data.status),
         default_appointment_type_ids=data.default_appointment_type_ids,
         default_insurances=data.default_insurances,
+        appointment_type_durations=data.appointment_type_durations,
     )
     db.add(provider)
     await db.flush()
@@ -63,6 +64,8 @@ async def update_provider(db: AsyncSession, provider: Provider, data: ProviderUp
         provider.default_appointment_type_ids = data.default_appointment_type_ids
     if data.default_insurances is not None:
         provider.default_insurances = data.default_insurances
+    if data.appointment_type_durations is not None:
+        provider.appointment_type_durations = data.appointment_type_durations
     await db.flush()
     return provider
 

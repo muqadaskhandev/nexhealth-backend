@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.staff_context import StaffContext, get_staff_context
@@ -22,7 +22,7 @@ from app.schemas.providers import (
     ProviderOut,
     ProviderUpdate,
 )
-from app.services import providers_service
+from app.services import avatar_storage, providers_service
 
 router = APIRouter(tags=["providers"])
 
@@ -71,6 +71,44 @@ async def delete_provider(
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Provider not found")
     await providers_service.delete_provider(db, provider)
     await db.commit()
+
+
+@router.post("/api/providers/{provider_id}/avatar", response_model=ProviderOut)
+async def upload_provider_avatar(
+    provider_id: uuid.UUID,
+    file: UploadFile = File(...),
+    ctx: StaffContext = Depends(get_staff_context),
+    db: AsyncSession = Depends(get_db),
+):
+    provider = await providers_service.get_provider(db, ctx, provider_id)
+    if provider is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Provider not found")
+    try:
+        url = await avatar_storage.save_avatar_upload(provider.id, file)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    avatar_storage.delete_avatar_file(provider.avatar_url)
+    provider.avatar_url = url
+    await db.commit()
+    await db.refresh(provider)
+    return ProviderOut.model_validate(provider)
+
+
+@router.delete("/api/providers/{provider_id}/avatar", response_model=ProviderOut)
+async def remove_provider_avatar(
+    provider_id: uuid.UUID,
+    ctx: StaffContext = Depends(get_staff_context),
+    db: AsyncSession = Depends(get_db),
+):
+    provider = await providers_service.get_provider(db, ctx, provider_id)
+    if provider is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Provider not found")
+    avatar_storage.delete_avatar_file(provider.avatar_url)
+    provider.avatar_url = None
+    await db.commit()
+    await db.refresh(provider)
+    return ProviderOut.model_validate(provider)
 
 
 # ── Operatories ──────────────────────────────────────────────────────────────

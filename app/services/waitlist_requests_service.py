@@ -131,11 +131,23 @@ async def get_slot(db: AsyncSession, request_id: uuid.UUID, slot_id: uuid.UUID) 
     return slot
 
 
+async def cancel_slot(db: AsyncSession, request: WaitlistRequest, slot: WaitlistRequestSlot) -> WaitlistRequestSlot:
+    if slot.claimed_by_patient_id is not None:
+        raise ValueError("This slot has already been claimed and can't be cancelled")
+    if slot.cancelled_at is not None:
+        raise ValueError("This slot has already been cancelled")
+    slot.cancelled_at = datetime.now(timezone.utc)
+    await db.flush()
+    return slot
+
+
 async def claim_slot(
     db: AsyncSession, ctx: StaffContext, request: WaitlistRequest, slot: WaitlistRequestSlot, patient_id: uuid.UUID
 ) -> WaitlistRequestSlot:
     if request.status == WaitlistRequestStatus.CANCELLED:
         raise ValueError("This waitlist request has been cancelled")
+    if slot.cancelled_at is not None:
+        raise ValueError("This slot has been cancelled")
     if slot.claimed_by_patient_id is not None:
         raise ValueError("This slot has already been claimed")
     now = datetime.now(timezone.utc)

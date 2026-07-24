@@ -122,6 +122,27 @@ async def cancel_waitlist_request(
     return await _to_out(db, request)
 
 
+@router.post("/api/waitlist-requests/{request_id}/slots/{slot_id}/cancel", response_model=WaitlistRequestOut)
+async def cancel_waitlist_slot(
+    request_id: uuid.UUID,
+    slot_id: uuid.UUID,
+    ctx: StaffContext = Depends(get_staff_context),
+    db: AsyncSession = Depends(get_db),
+):
+    request = await waitlist_requests_service.get_request(db, ctx, request_id)
+    if request is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Waitlist request not found")
+    slot = await waitlist_requests_service.get_slot(db, request_id, slot_id)
+    if slot is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Slot not found")
+    try:
+        await waitlist_requests_service.cancel_slot(db, request, slot)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+    await db.commit()
+    return await _to_out(db, request)
+
+
 @router.post("/api/waitlist-requests/{request_id}/slots/{slot_id}/claim", response_model=WaitlistRequestOut)
 async def claim_waitlist_slot(
     request_id: uuid.UUID,

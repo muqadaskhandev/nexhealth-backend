@@ -30,6 +30,7 @@ class WaitlistRequestSlotOut(BaseModel):
     claimed_by_patient_id: uuid.UUID | None
     claimed_at: datetime | None
     created_appointment_id: uuid.UUID | None
+    cancelled_at: datetime | None
 
 
 class WaitlistPatientOut(BaseModel):

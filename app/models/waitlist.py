@@ -62,6 +62,7 @@ class WaitlistRequestSlot(Base):
     created_appointment_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("appointments.id", ondelete="SET NULL"), nullable=True
     )
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class WaitlistRequestPatient(Base):

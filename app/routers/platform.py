@@ -3,16 +3,21 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dependencies import require_super_admin
 from app.database import get_db
 from app.models.invite import InviteType
 from app.models.user import User
-from app.schemas.location import LocationOut
-from app.schemas.practice import PracticeCreate, PracticeOut
-from app.services import invite_service, practice_service
+from app.schemas.location import LocationOut, LocationUpdate
+from app.schemas.practice import (
+    LocationCreate,
+    PracticeCreate,
+    PlatformPracticeUpdate,
+    PracticeOut,
+)
+from app.services import auth_service, invite_service, practice_service, user_service
 
 router = APIRouter(prefix="/api/platform", tags=["platform"])
 
@@ -52,7 +57,7 @@ async def onboard_practice(
     _: User = Depends(require_super_admin),
     db: AsyncSession = Depends(get_db),
 ) -> PracticeOut:
-    """Create practice + default location + invite Practice Admin via SES."""
+    """Create practice + one or more locations + invite Practice Admin via SES."""
     from app.services import user_service
 
     existing = await user_service.get_user_by_email(db, payload.admin_email)
@@ -64,7 +69,10 @@ async def onboard_practice(
         if payload.enabled_products
         else None
     )
-    practice, location = await practice_service.create_practice(
+    location_payloads = [
+        loc.model_dump() for loc in payload.locations if loc.name.strip()
+    ]
+    practice, _locations = await practice_service.create_practice(
         db,
         name=payload.name,
         address=payload.address,
@@ -75,6 +83,7 @@ async def onboard_practice(
         subscription_plan=payload.subscription_plan,
         enabled_products=products,
         default_location_name=payload.default_location_name,
+        locations=location_payloads or None,
     )
 
     await invite_service.create_invite(
@@ -102,3 +111,142 @@ async def get_practice(
     if practice is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Practice not found")
     return _practice_out(practice)
+
+
+@router.patch("/practices/{practice_id}", response_model=PracticeOut)
+async def update_practice(
+    practice_id: uuid.UUID,
+    payload: PlatformPracticeUpdate,
+    _: User = Depends(require_super_admin),
+    db: AsyncSession = Depends(get_db),
+) -> PracticeOut:
+    """Update an onboarded practice (profile, plan, and active flag)."""
+    practice = await practice_service.get_practice_with_locations(db, practice_id)
+    if practice is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Practice not found")
+
+    products = (
+        payload.enabled_products.model_dump()
+        if payload.enabled_products is not None
+        else None
+    )
+    data = payload.model_dump(exclude_unset=True)
+    if "enabled_products" in data:
+        data["enabled_products"] = products
+
+    await practice_service.update_practice(db, practice, **data)
+
+    # Deactivating a practice immediately kicks out all of its users.
+    if data.get("is_active") is False:
+        await auth_service.revoke_practice_sessions(db, practice.id)
+
+    await db.commit()
+
+    practice = await practice_service.get_practice_with_locations(db, practice_id)
+    return _practice_out(practice)
+
+
+@router.post(
+    "/practices/{practice_id}/locations",
+    response_model=LocationOut,
+    status_code=status.HTTP_201_CREATED,
+)
+async def add_practice_location(
+    practice_id: uuid.UUID,
+    payload: LocationCreate,
+    _: User = Depends(require_super_admin),
+    db: AsyncSession = Depends(get_db),
+) -> LocationOut:
+    """Add an office to an existing practice and grant practice admins access."""
+    practice = await practice_service.get_practice(db, practice_id)
+    if practice is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Practice not found")
+
+    location = await practice_service.create_location_for_practice(
+        db,
+        practice,
+        name=payload.name,
+        address=payload.address,
+        address_line2=payload.address_line2,
+        city=payload.city,
+        state=payload.state,
+        zip_code=payload.zip_code,
+        phone=payload.phone,
+        email=payload.email,
+    )
+    await user_service.grant_location_to_practice_admins(db, practice.id, location.id)
+    await db.commit()
+    await db.refresh(location)
+    return LocationOut.model_validate(location)
+
+
+@router.patch(
+    "/practices/{practice_id}/locations/{location_id}",
+    response_model=LocationOut,
+)
+async def update_practice_location(
+    practice_id: uuid.UUID,
+    location_id: uuid.UUID,
+    payload: LocationUpdate,
+    _: User = Depends(require_super_admin),
+    db: AsyncSession = Depends(get_db),
+) -> LocationOut:
+    location = await practice_service.get_practice_location(db, practice_id, location_id)
+    if location is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Location not found")
+
+    await practice_service.update_location(
+        db,
+        location,
+        **payload.model_dump(exclude_unset=True),
+    )
+    await db.commit()
+    await db.refresh(location)
+    return LocationOut.model_validate(location)
+
+
+@router.delete(
+    "/practices/{practice_id}/locations/{location_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+)
+async def delete_practice_location(
+    practice_id: uuid.UUID,
+    location_id: uuid.UUID,
+    _: User = Depends(require_super_admin),
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    location = await practice_service.get_practice_location(db, practice_id, location_id)
+    if location is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Location not found")
+
+    practice = await practice_service.get_practice_with_locations(db, practice_id)
+    if practice is not None and len(practice.locations) <= 1:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            detail="A practice must keep at least one location.",
+        )
+
+    await practice_service.delete_location(db, location)
+    await db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.delete(
+    "/practices/{practice_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+)
+async def delete_practice(
+    practice_id: uuid.UUID,
+    _: User = Depends(require_super_admin),
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    practice = await practice_service.get_practice(db, practice_id)
+    if practice is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Practice not found")
+
+    await auth_service.revoke_practice_sessions(db, practice.id)
+    await practice_service.delete_practice(db, practice)
+    await db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

@@ -15,6 +15,7 @@ from app.models.token import SsoTotpTransaction
 from app.models.user import AuthProvider, User, UserRole
 from app.schemas.auth import MessageOut, TotpVerifyRequest
 from app.services import auth_service, oauth, totp_service, user_service
+from app.services.auth_service import AuthError
 from app.services.oauth import OAuthError
 
 router = APIRouter(prefix="/api/auth/sso", tags=["sso"])
@@ -102,6 +103,11 @@ async def sso_callback(
     elif not user.is_active:
         return _frontend_redirect("/login?sso_error=account_disabled")
 
+    try:
+        await auth_service.ensure_practice_active(db, user)
+    except AuthError:
+        return _frontend_redirect("/login?sso_error=practice_inactive")
+
     ua = request.headers.get("user-agent")
     ip = request.client.host if request.client else None
 
@@ -168,6 +174,11 @@ async def sso_totp_verify(
     user = await user_service.get_user_by_id(db, tx.user_id)
     if user is None or not user.is_active:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="User not found or inactive")
+
+    try:
+        await auth_service.ensure_practice_active(db, user)
+    except AuthError as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail=exc.message)
 
     if not totp_service.verify_totp(secret=user.totp_secret or "", code=payload.code):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="Invalid 2FA code")

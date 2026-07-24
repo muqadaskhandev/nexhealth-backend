@@ -38,6 +38,17 @@ class PracticeOut(BaseModel):
     locations: list[LocationOut] = []
 
 
+class LocationCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    address: str = ""
+    address_line2: str = ""
+    city: str = ""
+    state: str = ""
+    zip_code: str = ""
+    phone: str = ""
+    email: str = ""
+
+
 class PracticeCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     address: str = ""
@@ -51,6 +62,8 @@ class PracticeCreate(BaseModel):
     admin_first_name: str = Field(min_length=1, max_length=120)
     admin_last_name: str = Field(min_length=1, max_length=120)
     default_location_name: str | None = None
+    # Optional offices created at onboard time. When empty, one default location is created.
+    locations: list[LocationCreate] = Field(default_factory=list)
 
 
 class PracticeUpdate(BaseModel):
@@ -64,19 +77,22 @@ class PracticeUpdate(BaseModel):
     enabled_products: EnabledProducts | None = None
 
 
+class PlatformPracticeUpdate(BaseModel):
+    """Fields a platform super-admin may change after onboarding."""
+
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    address: str | None = None
+    city: str | None = None
+    state: str | None = None
+    zip_code: str | None = None
+    phone: str | None = None
+    subscription_plan: SubscriptionPlan | None = None
+    enabled_products: EnabledProducts | None = None
+    is_active: bool | None = None
+
+
 class EhrConnectRequest(BaseModel):
     ehr_system: EhrSystem
-
-
-class LocationCreate(BaseModel):
-    name: str = Field(min_length=1, max_length=200)
-    address: str = ""
-    address_line2: str = ""
-    city: str = ""
-    state: str = ""
-    zip_code: str = ""
-    phone: str = ""
-    email: str = ""
 
 
 class InvitePreview(BaseModel):
@@ -97,5 +113,8 @@ class StaffInviteRequest(BaseModel):
     email: EmailStr
     first_name: str = Field(min_length=1, max_length=120)
     last_name: str = Field(min_length=1, max_length=120)
-    role: str = Field(default="member", pattern="^(admin|member)$")
+    role: str = Field(
+        default="member",
+        pattern="^(admin|member|provider|front_desk|billing)$",
+    )
     location_ids: list[uuid.UUID] = Field(min_length=1)

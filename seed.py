@@ -76,7 +76,7 @@ async def seed() -> None:
         result = await db.execute(select(Practice).where(Practice.name == "Better Dental"))
         practice = result.scalar_one_or_none()
         if practice is None:
-            practice, main_loc = await practice_service.create_practice(
+            practice, created_locs = await practice_service.create_practice(
                 db,
                 name="Better Dental",
                 address="445 Bush St.",
@@ -87,6 +87,7 @@ async def seed() -> None:
                 subscription_plan=SubscriptionPlan.PROFESSIONAL,
                 default_location_name="Better Dental - San Francisco",
             )
+            main_loc = created_locs[0]
             main_loc.address = LOCATIONS[0][1]
             for name, addr in LOCATIONS[1:]:
                 await practice_service.create_location_for_practice(

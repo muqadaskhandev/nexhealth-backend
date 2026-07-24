@@ -122,6 +122,31 @@ async def set_user_locations(
     await db.flush()
 
 
+async def grant_location_to_user(
+    db: AsyncSession, user: User, location_id: uuid.UUID
+) -> None:
+    """Ensure a user can access a location without removing other memberships."""
+    if await user_can_access_location(db, user.id, location_id):
+        return
+    db.add(UserLocation(user_id=user.id, location_id=location_id))
+    await db.flush()
+
+
+async def grant_location_to_practice_admins(
+    db: AsyncSession, practice_id: uuid.UUID, location_id: uuid.UUID
+) -> None:
+    """Give every practice admin access to a newly created office."""
+    result = await db.execute(
+        select(User).where(
+            User.practice_id == practice_id,
+            User.role == UserRole.ADMIN,
+            User.account_type == AccountType.PRACTICE,
+        )
+    )
+    for admin in result.scalars().all():
+        await grant_location_to_user(db, admin, location_id)
+
+
 async def list_users(db: AsyncSession, *, practice_id: uuid.UUID | None = None) -> list[User]:
     q = (
         select(User)

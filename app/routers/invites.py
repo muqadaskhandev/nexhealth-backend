@@ -44,6 +44,13 @@ async def accept_invite(
     if invite is None:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Invalid or expired invite")
 
+    practice = await practice_service.get_practice(db, invite.practice_id)
+    if practice is None or not practice.is_active:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            detail=auth_service.PRACTICE_INACTIVE_MESSAGE,
+        )
+
     user = await invite_service.accept_invite(db, invite, password=payload.password)
 
     ua = request.headers.get("user-agent")

@@ -74,6 +74,11 @@ async def create_user(
     )
     await db.commit()
     user = await user_service.get_user_with_locations(db, user.id)
+    if user is None:
+        raise HTTPException(
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="User was created but could not be loaded",
+        )
     return _to_detail(user)
 
 
@@ -143,6 +148,13 @@ async def send_reset(
     raw = await auth_service.create_password_reset(db, user)
     await db.commit()
     from app.routers.auth import _deliver_reset_email
+    from app.services.email_service import EmailDeliveryError
 
-    _deliver_reset_email(user.email, raw)
+    try:
+        _deliver_reset_email(user.email, raw)
+    except EmailDeliveryError as exc:
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY,
+            detail=str(exc) or "Failed to send password reset email",
+        ) from exc
     return MessageOut(message="Password reset link sent")

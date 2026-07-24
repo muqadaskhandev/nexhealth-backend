@@ -1,4 +1,6 @@
 .env
+.env.render
+render.env
 .venv/
 venv/
 __pycache__/

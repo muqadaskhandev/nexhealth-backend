@@ -53,7 +53,8 @@ async def create_practice(
     subscription_plan: SubscriptionPlan = SubscriptionPlan.STARTER,
     enabled_products: dict | None = None,
     default_location_name: str | None = None,
-) -> tuple[Practice, Location]:
+    locations: Sequence[dict] | None = None,
+) -> tuple[Practice, list[Location]]:
     products = enabled_products or dict(DEFAULT_PRODUCTS)
     practice = Practice(
         name=name.strip(),
@@ -68,19 +69,42 @@ async def create_practice(
     db.add(practice)
     await db.flush()
 
-    loc_name = default_location_name or f"{practice.name} — Main"
-    location = Location(
-        practice_id=practice.id,
-        name=loc_name,
-        address=address.strip() or practice.address,
-        city=city.strip(),
-        state=state.strip(),
-        zip_code=zip_code.strip(),
-        phone=phone.strip(),
-    )
-    db.add(location)
+    created: list[Location] = []
+    if locations:
+        for loc in locations:
+            loc_name = str(loc.get("name") or "").strip()
+            if not loc_name:
+                continue
+            location = Location(
+                practice_id=practice.id,
+                name=loc_name,
+                address=(str(loc.get("address") or "").strip() or practice.address),
+                address_line2=str(loc.get("address_line2") or "").strip(),
+                city=(str(loc.get("city") or "").strip() or practice.city),
+                state=(str(loc.get("state") or "").strip() or practice.state),
+                zip_code=(str(loc.get("zip_code") or "").strip() or practice.zip_code),
+                phone=(str(loc.get("phone") or "").strip() or practice.phone),
+                email=str(loc.get("email") or "").strip(),
+            )
+            db.add(location)
+            created.append(location)
+
+    if not created:
+        loc_name = default_location_name or f"{practice.name} — Main"
+        location = Location(
+            practice_id=practice.id,
+            name=loc_name,
+            address=address.strip() or practice.address,
+            city=city.strip(),
+            state=state.strip(),
+            zip_code=zip_code.strip(),
+            phone=phone.strip(),
+        )
+        db.add(location)
+        created.append(location)
+
     await db.flush()
-    return practice, location
+    return practice, created
 
 
 async def update_practice(db: AsyncSession, practice: Practice, **fields) -> Practice:
@@ -165,6 +189,16 @@ async def update_location(db: AsyncSession, location: Location, **fields) -> Loc
             setattr(location, key, value.strip() if isinstance(value, str) else value)
     await db.flush()
     return location
+
+
+async def delete_location(db: AsyncSession, location: Location) -> None:
+    await db.delete(location)
+    await db.flush()
+
+
+async def delete_practice(db: AsyncSession, practice: Practice) -> None:
+    await db.delete(practice)
+    await db.flush()
 
 
 async def list_practice_locations(

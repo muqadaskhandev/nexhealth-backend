@@ -60,6 +60,12 @@ async def get_current_user(
     if user is None or not user.is_active:
         raise _credentials_error
 
+    if not await auth_service.is_user_practice_active(db, user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=auth_service.PRACTICE_INACTIVE_MESSAGE,
+        )
+
     # Verify the underlying session is still live (immediate revocation on
     # logout / password change / deactivation).
     sid = payload.get("sid")

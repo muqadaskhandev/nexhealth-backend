@@ -18,12 +18,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.core import security
+from app.models.practice import Practice
 from app.models.token import PasswordResetToken, RefreshToken
-from app.models.user import AuthProvider, User
+from app.models.user import AccountType, AuthProvider, User
 from app.services import user_service
 
 MAX_FAILED_LOGINS = 5
 LOCKOUT_MINUTES = 15
+PRACTICE_INACTIVE_MESSAGE = "This practice is inactive. Contact your administrator."
 
 
 class AuthError(Exception):
@@ -47,6 +49,33 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+async def ensure_practice_active(db: AsyncSession, user: User) -> None:
+    """Block practice-scoped users when their practice has been deactivated."""
+    if user.account_type == AccountType.SUPER_ADMIN or user.practice_id is None:
+        return
+    practice = await db.get(Practice, user.practice_id)
+    if practice is None or not practice.is_active:
+        raise AuthError(PRACTICE_INACTIVE_MESSAGE)
+
+
+async def is_user_practice_active(db: AsyncSession, user: User) -> bool:
+    """True if the user may authenticate (super-admins always; practice users need an active practice)."""
+    if user.account_type == AccountType.SUPER_ADMIN or user.practice_id is None:
+        return True
+    practice = await db.get(Practice, user.practice_id)
+    return practice is not None and practice.is_active
+
+
+async def revoke_practice_sessions(db: AsyncSession, practice_id: uuid.UUID) -> None:
+    """Invalidate every live session for users belonging to a practice."""
+    user_ids = select(User.id).where(User.practice_id == practice_id)
+    await db.execute(
+        update(RefreshToken)
+        .where(RefreshToken.user_id.in_(user_ids), RefreshToken.revoked_at.is_(None))
+        .values(revoked_at=_now())
+    )
+
+
 # ── Password login ───────────────────────────────────────────────────────────
 async def authenticate_password(
     db: AsyncSession, *, email: str, password: str
@@ -65,6 +94,8 @@ async def authenticate_password(
 
     if not user.is_active:
         raise AuthError("This account is disabled.")
+
+    await ensure_practice_active(db, user)
 
     if not security.verify_password(password, user.password_hash):
         await _register_failed_login(db, user)
@@ -159,6 +190,8 @@ async def rotate_refresh_token(
     user = await user_service.get_user_by_id(db, row.user_id)
     if user is None or not user.is_active:
         raise AuthError("Account unavailable")
+
+    await ensure_practice_active(db, user)
 
     # Mint the replacement.
     raw_new = security.generate_opaque_token()

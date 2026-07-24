@@ -233,6 +233,11 @@ async def totp_verify(
     if user is None or not user.is_active:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="User not found or inactive")
 
+    try:
+        await auth_service.ensure_practice_active(db, user)
+    except AuthError as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail=exc.message)
+
     if not totp_service.verify_totp(secret=user.totp_secret or "", code=payload.code):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="Invalid 2FA code")
 

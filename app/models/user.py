@@ -19,9 +19,17 @@ if TYPE_CHECKING:
 
 
 class UserRole(str, enum.Enum):
-    """Practice-user roles. Admins can manage other users."""
+    """Practice-user roles. Admins manage settings and other users.
+
+    Staff roles (provider / front_desk / billing / member) share clinical access
+    but differ in product-area permissions — see app.core.permissions.
+    """
 
     ADMIN = "admin"
+    PROVIDER = "provider"
+    FRONT_DESK = "front_desk"
+    BILLING = "billing"
+    # Generic staff (legacy + default invite role).
     MEMBER = "member"
 
 

@@ -1,7 +1,8 @@
 """Transactional email delivery via AWS SES.
 
 In development (SES_ENABLED=false) messages are printed to stdout so flows
-are testable without AWS credentials.
+are testable without AWS credentials. Outside production, a failed SES send
+also falls back to stdout so local invites are not blocked by AWS misconfig.
 """
 from __future__ import annotations
 
@@ -10,6 +11,14 @@ import logging
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+class EmailDeliveryError(RuntimeError):
+    """Raised when an email cannot be delivered (production SES failures)."""
+
+
+def _print_email(*, to: str, subject: str, html: str, text: str) -> None:
+    print(f"\n[email] To: {to}\nSubject: {subject}\n{text}\nLink in HTML:\n{html}\n")
 
 
 def _send_via_ses(*, to: str, subject: str, html: str, text: str) -> None:
@@ -36,14 +45,23 @@ def _send_via_ses(*, to: str, subject: str, html: str, text: str) -> None:
         )
     except (BotoCoreError, ClientError) as exc:
         logger.exception("SES send failed for %s", to)
-        raise RuntimeError("Failed to send email") from exc
+        raise EmailDeliveryError(
+            "Failed to send email. Check AWS SES configuration and verified from-address."
+        ) from exc
 
 
 def send_email(*, to: str, subject: str, html: str, text: str) -> None:
     if settings.ses_enabled:
-        _send_via_ses(to=to, subject=subject, html=html, text=text)
-        return
-    print(f"\n[email] To: {to}\nSubject: {subject}\n{text}\nLink in HTML:\n{html}\n")
+        try:
+            _send_via_ses(to=to, subject=subject, html=html, text=text)
+            return
+        except EmailDeliveryError:
+            if settings.is_production:
+                raise
+            logger.warning(
+                "SES send failed for %s; falling back to stdout (non-production)", to
+            )
+    _print_email(to=to, subject=subject, html=html, text=text)
 
 
 def send_practice_admin_invite(

@@ -25,8 +25,14 @@ from app.schemas.practice import (
     StaffInviteRequest,
 )
 from app.models.invite import InviteType
-from app.services import invite_service, logo_storage, practice_service, synchronizer_service, user_service
-
+from app.services import (
+    email_service,
+    invite_service,
+    logo_storage,
+    practice_service,
+    synchronizer_service,
+    user_service,
+)
 router = APIRouter(prefix="/api/practice", tags=["practice"])
 
 
@@ -231,10 +237,9 @@ async def add_location(
         email=payload.email,
     )
     # Grant the creating admin access so it appears in their location switcher.
-    current = await user_service.list_user_locations(db, admin.id)
-    await user_service.set_user_locations(
-        db, admin, [*(loc.id for loc in current), location.id]
-    )
+    await user_service.grant_location_to_user(db, admin, location.id)
+    # Keep other practice admins in sync so they can switch into the new office.
+    await user_service.grant_location_to_practice_admins(db, practice.id, location.id)
     await db.commit()
     await db.refresh(location)
     return LocationOut.model_validate(location)
@@ -345,17 +350,24 @@ async def invite_staff(
             detail="One or more locations do not belong to this practice",
         )
 
-    await invite_service.create_invite(
-        db,
-        practice_id=practice.id,
-        practice_name=practice.name,
-        email=payload.email,
-        first_name=payload.first_name,
-        last_name=payload.last_name,
-        invite_type=InviteType.STAFF,
-        inviter_name=admin.full_name,
-        role=payload.role,
-        location_ids=payload.location_ids,
-    )
+    try:
+        await invite_service.create_invite(
+            db,
+            practice_id=practice.id,
+            practice_name=practice.name,
+            email=payload.email,
+            first_name=payload.first_name,
+            last_name=payload.last_name,
+            invite_type=InviteType.STAFF,
+            inviter_name=admin.full_name,
+            role=payload.role,
+            location_ids=payload.location_ids,
+        )
+    except email_service.EmailDeliveryError as exc:
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY,
+            detail=str(exc) or "Failed to send invitation email",
+        ) from exc
+
     await db.commit()
     return {"message": f"Invitation sent to {payload.email}"}

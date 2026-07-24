@@ -34,7 +34,8 @@ class InviteToken(Base):
         Enum(InviteType, name="invite_type", values_callable=lambda e: [m.value for m in e]),
         nullable=False,
     )
-    # Staff invites: admin | member. Practice-admin invites always become admin.
+    # Staff invites: admin | provider | front_desk | billing | member.
+    # Practice-admin invites always become admin.
     role: Mapped[str] = mapped_column(String(20), nullable=False, default="member")
     location_ids: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
     token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)

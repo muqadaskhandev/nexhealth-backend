@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.core import security
+from app.core.permissions import normalize_staff_role
 from app.models.invite import InviteToken, InviteType
 from app.models.user import UserRole
 from app.services import email_service, user_service
@@ -34,11 +35,10 @@ async def create_invite(
 ) -> str:
     raw = security.generate_opaque_token()
     loc_ids = [str(x) for x in (location_ids or [])]
-    stored_role = (
-        "admin"
-        if invite_type == InviteType.PRACTICE_ADMIN
-        else ("admin" if role == "admin" else "member")
-    )
+    if invite_type == InviteType.PRACTICE_ADMIN:
+        stored_role = UserRole.ADMIN.value
+    else:
+        stored_role = normalize_staff_role(role).value
     db.add(
         InviteToken(
             practice_id=practice_id,
@@ -95,7 +95,7 @@ async def accept_invite(
     if invite.invite_type == InviteType.PRACTICE_ADMIN:
         role = UserRole.ADMIN
     else:
-        role = UserRole.ADMIN if invite.role == "admin" else UserRole.MEMBER
+        role = normalize_staff_role(invite.role)
 
     user = await user_service.create_user(
         db,

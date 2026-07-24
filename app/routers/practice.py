@@ -327,6 +327,34 @@ async def copy_location_logo(
     return [LocationOut.model_validate(loc) for loc in updated]
 
 
+@router.post("/locations/{location_id}/reserve-with-google/copy", response_model=list[LocationOut])
+async def copy_reserve_with_google(
+    location_id: uuid.UUID,
+    payload: LogoCopyRequest,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> list[LocationOut]:
+    practice, source = await _get_admin_location(admin, db, location_id)
+
+    updated: list = []
+    for target_id in payload.location_ids:
+        if target_id == source.id:
+            continue
+        target = await practice_service.get_practice_location(db, practice.id, target_id)
+        if target is None:
+            raise HTTPException(
+                status.HTTP_404_NOT_FOUND,
+                detail=f"Location {target_id} not found",
+            )
+        target.reserve_with_google = source.reserve_with_google
+        updated.append(target)
+
+    await db.commit()
+    for loc in updated:
+        await db.refresh(loc)
+    return [LocationOut.model_validate(loc) for loc in updated]
+
+
 @router.post("/invite-staff", status_code=status.HTTP_201_CREATED)
 async def invite_staff(
     payload: StaffInviteRequest,

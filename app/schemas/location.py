@@ -25,6 +25,7 @@ class LocationOut(BaseModel):
     allow_cancellations_for_unmapped: bool = False
     set_availability_by_operatory: bool = False
     ask_for_insurance: bool = False
+    reserve_with_google: bool = False
 
 
 class SwitchLocationRequest(BaseModel):
@@ -44,6 +45,7 @@ class LocationUpdate(BaseModel):
     allow_cancellations_for_unmapped: bool | None = None
     set_availability_by_operatory: bool | None = None
     ask_for_insurance: bool | None = None
+    reserve_with_google: bool | None = None
 
 
 class LogoCopyRequest(BaseModel):

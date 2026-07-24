@@ -43,6 +43,7 @@ class Location(Base):
     allow_cancellations_for_unmapped: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     set_availability_by_operatory: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     ask_for_insurance: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    reserve_with_google: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

@@ -11,7 +11,7 @@ from app.database import get_db
 from app.models.invite import InviteType
 from app.models.user import User
 from app.schemas.location import LocationOut
-from app.schemas.practice import PracticeCreate, PracticeOut
+from app.schemas.practice import PracticeCreate, PracticeOut, PracticeUpdate
 from app.services import invite_service, practice_service
 
 router = APIRouter(prefix="/api/platform", tags=["platform"])
@@ -101,4 +101,38 @@ async def get_practice(
     practice = await practice_service.get_practice_with_locations(db, practice_id)
     if practice is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Practice not found")
+    return _practice_out(practice)
+
+
+@router.patch("/practices/{practice_id}", response_model=PracticeOut)
+async def update_practice(
+    practice_id: uuid.UUID,
+    payload: PracticeUpdate,
+    _: User = Depends(require_super_admin),
+    db: AsyncSession = Depends(get_db),
+) -> PracticeOut:
+    practice = await practice_service.get_practice_with_locations(db, practice_id)
+    if practice is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Practice not found")
+
+    products = (
+        payload.enabled_products.model_dump()
+        if payload.enabled_products is not None
+        else None
+    )
+    await practice_service.update_practice(
+        db,
+        practice,
+        name=payload.name,
+        logo_url=payload.logo_url,
+        address=payload.address,
+        city=payload.city,
+        state=payload.state,
+        zip_code=payload.zip_code,
+        phone=payload.phone,
+        enabled_products=products,
+    )
+    await db.commit()
+
+    practice = await practice_service.get_practice_with_locations(db, practice_id)
     return _practice_out(practice)

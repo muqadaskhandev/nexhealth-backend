@@ -32,6 +32,7 @@ from app.models.staff import (
 )
 from app.models.token import PasswordResetToken, RefreshToken, SsoTotpTransaction
 from app.models.user import AccountType, AuthProvider, User, UserRole
+from app.models.waitlist import WaitlistRequest, WaitlistRequestPatient, WaitlistRequestSlot, WaitlistRequestStatus
 
 __all__ = [
     "User",

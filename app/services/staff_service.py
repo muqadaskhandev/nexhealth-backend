@@ -13,6 +13,7 @@ from app.models.staff import (
     ActivityType,
     Appointment,
     AppointmentStatus,
+    FormPacket,
     FormRequest,
     FormRequestStatus,
     FormSubmission,
@@ -32,6 +33,8 @@ from app.models.staff import (
 from app.schemas.staff import (
     AppointmentCreate,
     AppointmentUpdate,
+    FormPacketCreate,
+    FormPacketUpdate,
     FormTemplateCreate,
     FormTemplateUpdate,
     PatientCreate,
@@ -497,6 +500,67 @@ async def unarchive_form_template(db: AsyncSession, template: FormTemplate) -> F
     template.archived_at = None
     await db.flush()
     return template
+
+
+async def _validate_packet_forms(
+    db: AsyncSession, practice_id: uuid.UUID, location_id: uuid.UUID, form_template_ids: list[uuid.UUID]
+) -> None:
+    result = await db.execute(
+        select(FormTemplate.id).where(
+            FormTemplate.id.in_(form_template_ids),
+            FormTemplate.practice_id == practice_id,
+            FormTemplate.location_id == location_id,
+        )
+    )
+    found = {row[0] for row in result.all()}
+    if found != set(form_template_ids):
+        raise ValueError("Some forms could not be found in your current location")
+
+
+async def list_form_packets(db: AsyncSession, ctx: StaffContext) -> list[FormPacket]:
+    result = await db.execute(
+        select(FormPacket)
+        .where(FormPacket.practice_id == ctx.practice_id, FormPacket.location_id == ctx.location_id)
+        .order_by(FormPacket.name)
+    )
+    return list(result.scalars().all())
+
+
+async def get_form_packet(db: AsyncSession, ctx: StaffContext, packet_id: uuid.UUID) -> FormPacket | None:
+    packet = await db.get(FormPacket, packet_id)
+    if packet is None or packet.practice_id != ctx.practice_id or packet.location_id != ctx.location_id:
+        return None
+    return packet
+
+
+async def create_form_packet(db: AsyncSession, ctx: StaffContext, data: FormPacketCreate) -> FormPacket:
+    if not data.name.strip():
+        raise ValueError("Name is required")
+    await _validate_packet_forms(db, ctx.practice_id, ctx.location_id, data.form_template_ids)
+    packet = FormPacket(
+        practice_id=ctx.practice_id,
+        location_id=ctx.location_id,
+        name=data.name.strip(),
+        form_template_ids=[str(i) for i in data.form_template_ids],
+    )
+    db.add(packet)
+    await db.flush()
+    return packet
+
+
+async def update_form_packet(db: AsyncSession, packet: FormPacket, data: FormPacketUpdate) -> FormPacket:
+    if not data.name.strip():
+        raise ValueError("Name is required")
+    await _validate_packet_forms(db, packet.practice_id, packet.location_id, data.form_template_ids)
+    packet.name = data.name.strip()
+    packet.form_template_ids = [str(i) for i in data.form_template_ids]
+    await db.flush()
+    return packet
+
+
+async def delete_form_packet(db: AsyncSession, packet: FormPacket) -> None:
+    await db.delete(packet)
+    await db.flush()
 
 
 async def list_form_submissions(

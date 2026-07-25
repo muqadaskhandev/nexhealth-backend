@@ -19,6 +19,9 @@ from app.schemas.staff import (
     DashboardStats,
     FormSubmissionOut,
     CopyFormTemplatesRequest,
+    FormPacketCreate,
+    FormPacketOut,
+    FormPacketUpdate,
     FormTemplateCreate,
     FormTemplateOut,
     FormTemplateUpdate,
@@ -378,6 +381,62 @@ async def unarchive_form_template(
     tpl = await staff_service.unarchive_form_template(db, tpl)
     await db.commit()
     return FormTemplateOut.model_validate(tpl)
+
+
+@router.get("/api/forms/packets", response_model=list[FormPacketOut])
+async def form_packets(
+    ctx: StaffContext = Depends(get_staff_context), db: AsyncSession = Depends(get_db)
+):
+    rows = await staff_service.list_form_packets(db, ctx)
+    return [FormPacketOut.model_validate(p) for p in rows]
+
+
+@router.post("/api/forms/packets", response_model=FormPacketOut, status_code=status.HTTP_201_CREATED)
+async def create_form_packet(
+    payload: FormPacketCreate,
+    _: User = Depends(require_admin),
+    ctx: StaffContext = Depends(get_staff_context),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        packet = await staff_service.create_form_packet(db, ctx, payload)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+    await db.commit()
+    return FormPacketOut.model_validate(packet)
+
+
+@router.patch("/api/forms/packets/{packet_id}", response_model=FormPacketOut)
+async def update_form_packet(
+    packet_id: uuid.UUID,
+    payload: FormPacketUpdate,
+    _: User = Depends(require_admin),
+    ctx: StaffContext = Depends(get_staff_context),
+    db: AsyncSession = Depends(get_db),
+):
+    packet = await staff_service.get_form_packet(db, ctx, packet_id)
+    if packet is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Packet not found")
+    try:
+        packet = await staff_service.update_form_packet(db, packet, payload)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+    await db.commit()
+    return FormPacketOut.model_validate(packet)
+
+
+@router.delete("/api/forms/packets/{packet_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_form_packet(
+    packet_id: uuid.UUID,
+    _: User = Depends(require_admin),
+    ctx: StaffContext = Depends(get_staff_context),
+    db: AsyncSession = Depends(get_db),
+):
+    packet = await staff_service.get_form_packet(db, ctx, packet_id)
+    if packet is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Packet not found")
+    await staff_service.delete_form_packet(db, packet)
+    await db.commit()
 
 
 @router.get("/api/forms/submissions", response_model=list[FormSubmissionOut])

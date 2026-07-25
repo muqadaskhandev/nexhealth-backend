@@ -177,6 +177,24 @@ class CopyFormTemplatesRequest(BaseModel):
     location_ids: list[uuid.UUID] = Field(min_length=1)
 
 
+class FormPacketCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    form_template_ids: list[uuid.UUID] = Field(min_length=1)
+
+
+class FormPacketUpdate(FormPacketCreate):
+    pass
+
+
+class FormPacketOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    name: str
+    form_template_ids: list[uuid.UUID]
+    created_at: datetime
+
+
 class FormSubmissionOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

@@ -697,6 +697,8 @@ async def assign_public_packet_submission(
             status=FormRequestStatus.COMPLETED,
             sent_at=sub.created_at,
             expires_at=sub.created_at,
+            sync_status="synced",
+            synced_at=_now(),
         )
         db.add(req)
         await db.flush()
@@ -966,12 +968,16 @@ async def list_form_request_batches(db: AsyncSession, ctx: StaffContext, *, tab:
                 "expires_at": req.expires_at,
                 "forms": [],
                 "statuses": [],
+                "viewed_flags": [],
+                "sync_statuses": [],
             }
             order.append(key)
         b = batches[key]
         b["request_ids"].append(req.id)
         b["forms"].append({"id": tpl.id, "name": tpl.name})
         b["statuses"].append(req.status)
+        b["viewed_flags"].append(req.viewed_at is not None)
+        b["sync_statuses"].append(req.sync_status)
         if req.expires_at > b["expires_at"]:
             b["expires_at"] = req.expires_at
 
@@ -979,15 +985,38 @@ async def list_form_request_batches(db: AsyncSession, ctx: StaffContext, *, tab:
     for key in order:
         b = batches[key]
         statuses = b.pop("statuses")
-        if all(s == FormRequestStatus.COMPLETED for s in statuses):
+        viewed_flags = b.pop("viewed_flags")
+        sync_statuses = b.pop("sync_statuses")
+
+        completed_count = sum(1 for s in statuses if s == FormRequestStatus.COMPLETED)
+        all_completed = completed_count == len(statuses)
+        all_synced = all_completed and all(s == "synced" for s in sync_statuses)
+
+        if all_synced:
             status = "synced"
-        elif now > b["expires_at"] + timedelta(hours=FORM_REQUEST_EXPIRY_GRACE_HOURS):
+        elif not all_completed and now > b["expires_at"] + timedelta(hours=FORM_REQUEST_EXPIRY_GRACE_HOURS):
             status = "expired"
         else:
             status = "active"
         if tab != "all" and status != tab:
             continue
+
+        if all_completed:
+            completed_status = "complete"
+        elif completed_count > 0:
+            completed_status = "in_progress"
+        elif any(viewed_flags):
+            completed_status = "viewed"
+        else:
+            completed_status = "sent"
+
+        sync_status: str | None = None
+        if all_completed and not all_synced:
+            sync_status = "sync-failed" if any(s == "failed" for s in sync_statuses) else "sync-now"
+
         b["status"] = status
+        b["completed_status"] = completed_status
+        b["sync_status"] = sync_status
         out.append(b)
     return out
 
@@ -1029,6 +1058,63 @@ async def archive_form_requests(db: AsyncSession, ctx: StaffContext, request_ids
     for req in requests:
         req.archived_at = now
     await db.flush()
+
+
+async def sync_form_requests(db: AsyncSession, ctx: StaffContext, request_ids: list[uuid.UUID]) -> None:
+    result = await db.execute(
+        select(FormRequest).where(
+            FormRequest.id.in_(request_ids),
+            FormRequest.practice_id == ctx.practice_id,
+            FormRequest.location_id == ctx.location_id,
+        )
+    )
+    requests = result.scalars().all()
+    if len(requests) != len(set(request_ids)):
+        raise ValueError("Some form requests could not be found")
+    now = _now()
+    for req in requests:
+        if req.status != FormRequestStatus.COMPLETED:
+            continue
+        patient = await db.get(Patient, req.patient_id)
+        if patient is not None and patient.archived:
+            req.sync_status = "failed"
+            continue
+        req.sync_status = "synced"
+        req.synced_at = now
+    await db.flush()
+
+
+async def mark_synced_form_requests(db: AsyncSession, ctx: StaffContext, request_ids: list[uuid.UUID]) -> None:
+    result = await db.execute(
+        select(FormRequest).where(
+            FormRequest.id.in_(request_ids),
+            FormRequest.practice_id == ctx.practice_id,
+            FormRequest.location_id == ctx.location_id,
+        )
+    )
+    requests = result.scalars().all()
+    if len(requests) != len(set(request_ids)):
+        raise ValueError("Some form requests could not be found")
+    now = _now()
+    for req in requests:
+        req.sync_status = "synced"
+        req.synced_at = now
+    await db.flush()
+
+
+async def get_form_request_submissions(
+    db: AsyncSession, ctx: StaffContext, request_ids: list[uuid.UUID]
+) -> list[FormSubmission]:
+    result = await db.execute(
+        select(FormSubmission)
+        .join(FormRequest, FormRequest.id == FormSubmission.form_request_id)
+        .where(
+            FormSubmission.form_request_id.in_(request_ids),
+            FormRequest.practice_id == ctx.practice_id,
+            FormRequest.location_id == ctx.location_id,
+        )
+    )
+    return list(result.scalars().all())
 
 
 # ── Messages ─────────────────────────────────────────────────────────────────

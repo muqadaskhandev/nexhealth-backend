@@ -46,6 +46,7 @@ class Location(Base):
     reserve_with_google: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     form_expiration_amount: Mapped[int] = mapped_column(Integer, default=7, nullable=False)
     form_expiration_unit: Mapped[str] = mapped_column(String(20), default="days", nullable=False)
+    form_sync_mode: Mapped[str] = mapped_column(String(20), default="automatic", nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

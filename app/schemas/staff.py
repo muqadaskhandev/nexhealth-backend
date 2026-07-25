@@ -241,6 +241,8 @@ class FormRequestBatchOut(BaseModel):
     expires_at: datetime
     forms: list[FormRequestFormOut]
     status: str
+    completed_status: str
+    sync_status: str | None = None
 
 
 class ReactivateFormRequestsRequest(BaseModel):
@@ -250,6 +252,16 @@ class ReactivateFormRequestsRequest(BaseModel):
 
 class ArchiveFormRequestsRequest(BaseModel):
     request_ids: list[uuid.UUID] = Field(min_length=1)
+
+
+class SyncFormRequestsRequest(BaseModel):
+    request_ids: list[uuid.UUID] = Field(min_length=1)
+
+
+class FormSubmissionDetailOut(BaseModel):
+    form_name: str
+    answers: dict[str, Any]
+    submitted_at: datetime
 
 
 class FormSubmissionOut(BaseModel):

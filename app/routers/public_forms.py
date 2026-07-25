@@ -33,6 +33,8 @@ async def get_token_info(token: str, db: AsyncSession = Depends(get_db)):
     token_row = await public_forms_service.get_token(db, token)
     if token_row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="This link is invalid or has expired.")
+    await public_forms_service.mark_viewed(db, token_row.patient_id)
+    await db.commit()
     branding = await public_forms_service.get_branding(db, token_row)
     return PublicTokenInfoOut(**branding)
 

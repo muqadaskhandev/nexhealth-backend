@@ -28,6 +28,7 @@ class LocationOut(BaseModel):
     reserve_with_google: bool = False
     form_expiration_amount: int = 7
     form_expiration_unit: str = "days"
+    form_sync_mode: str = "automatic"
 
 
 class SwitchLocationRequest(BaseModel):
@@ -50,6 +51,7 @@ class LocationUpdate(BaseModel):
     reserve_with_google: bool | None = None
     form_expiration_amount: int | None = Field(default=None, ge=1)
     form_expiration_unit: str | None = None
+    form_sync_mode: str | None = None
 
 
 class LogoCopyRequest(BaseModel):

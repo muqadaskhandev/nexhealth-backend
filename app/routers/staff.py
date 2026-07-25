@@ -23,6 +23,7 @@ from app.schemas.staff import (
     FormPacketOut,
     FormPacketUpdate,
     FormRequestBatchOut,
+    FormSubmissionDetailOut,
     FormTemplateCreate,
     FormTemplateOut,
     FormTemplateUpdate,
@@ -38,6 +39,7 @@ from app.schemas.staff import (
     ReactivateFormRequestsRequest,
     SendFormRequest,
     SendMessageRequest,
+    SyncFormRequestsRequest,
     VerifyInsuranceRequest,
     WaitlistCreate,
     WaitlistOut,
@@ -554,6 +556,44 @@ async def archive_form_requests(
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
     await db.commit()
     return {"message": "Form request archived"}
+
+
+@router.post("/api/forms/requests/sync")
+async def sync_form_requests(
+    payload: SyncFormRequestsRequest,
+    ctx: StaffContext = Depends(get_staff_context),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        await staff_service.sync_form_requests(db, ctx, payload.request_ids)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+    await db.commit()
+    return {"message": "Sync attempted"}
+
+
+@router.post("/api/forms/requests/mark-synced")
+async def mark_synced_form_requests(
+    payload: SyncFormRequestsRequest,
+    ctx: StaffContext = Depends(get_staff_context),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        await staff_service.mark_synced_form_requests(db, ctx, payload.request_ids)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+    await db.commit()
+    return {"message": "Marked as synced"}
+
+
+@router.get("/api/forms/requests/submissions", response_model=list[FormSubmissionDetailOut])
+async def form_request_submissions(
+    request_ids: list[uuid.UUID] = Query(default=[]),
+    ctx: StaffContext = Depends(get_staff_context),
+    db: AsyncSession = Depends(get_db),
+):
+    rows = await staff_service.get_form_request_submissions(db, ctx, request_ids)
+    return [FormSubmissionDetailOut(form_name=r.form_name, answers=r.answers, submitted_at=r.submitted_at) for r in rows]
 
 
 # ── Communications ───────────────────────────────────────────────────────────

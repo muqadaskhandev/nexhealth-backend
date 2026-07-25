@@ -1,7 +1,7 @@
 """Admin user-management routes.
 
 All routes here require an ADMIN role (via require_admin). Admins can invite
-users, assign locations and roles, deactivate accounts, and trigger resets.
+users, assign locations and roles, deactivate / delete accounts, and trigger resets.
 """
 from __future__ import annotations
 
@@ -28,6 +28,14 @@ def _to_detail(user: User) -> UserDetail:
         for m in sorted(user.memberships, key=lambda m: m.location.name)
     ]
     return UserDetail(**UserOut.model_validate(user).model_dump(), locations=locations)
+
+
+def _ensure_manageable(admin: User, user: User) -> None:
+    """Practice admins may only manage users in their own organization."""
+    if admin.account_type == AccountType.SUPER_ADMIN:
+        return
+    if admin.practice_id is None or user.practice_id != admin.practice_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="User not found")
 
 
 @router.get("", response_model=list[UserDetail])
@@ -92,6 +100,7 @@ async def update_user(
     user = await user_service.get_user_with_locations(db, user_id)
     if user is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="User not found")
+    _ensure_manageable(admin, user)
 
     if payload.first_name is not None:
         user.first_name = payload.first_name
@@ -139,12 +148,13 @@ async def update_user(
 @router.post("/{user_id}/send-reset", response_model=MessageOut)
 async def send_reset(
     user_id: uuid.UUID,
-    _: User = Depends(require_admin),
+    admin: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ) -> MessageOut:
     user = await user_service.get_user_by_id(db, user_id)
     if user is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="User not found")
+    _ensure_manageable(admin, user)
     raw = await auth_service.create_password_reset(db, user)
     await db.commit()
     from app.routers.auth import _deliver_reset_email
@@ -158,3 +168,24 @@ async def send_reset(
             detail=str(exc) or "Failed to send password reset email",
         ) from exc
     return MessageOut(message="Password reset link sent")
+
+
+@router.delete("/{user_id}", response_model=MessageOut)
+async def delete_user(
+    user_id: uuid.UUID,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> MessageOut:
+    """Permanently remove a staff user from the practice."""
+    user = await user_service.get_user_by_id(db, user_id)
+    if user is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="User not found")
+    _ensure_manageable(admin, user)
+    if user.id == admin.id:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, detail="You cannot delete yourself"
+        )
+    await auth_service._revoke_user_sessions(db, user.id)
+    await db.delete(user)
+    await db.commit()
+    return MessageOut(message="User deleted")

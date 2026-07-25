@@ -96,7 +96,7 @@ PERMISSION_MATRIX: list[PermissionRow] = [
     },
     {
         "area": "Staff & users",
-        "description": "Invite staff, change roles, reset passwords, deactivate accounts",
+        "description": "Invite staff, change roles, reset passwords, deactivate or delete accounts",
         "admin": Capability.MANAGE,
         "provider": None,
         "front_desk": None,

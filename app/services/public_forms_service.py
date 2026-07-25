@@ -10,7 +10,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core import security
 from app.models.location import Location
 from app.models.practice import Practice
-from app.models.staff import ActivityType, FormAccessToken, FormRequest, FormRequestStatus, FormSubmission, FormTemplate, Patient
+from app.models.staff import (
+    ActivityType,
+    FormAccessToken,
+    FormPacket,
+    FormRequest,
+    FormRequestStatus,
+    FormSubmission,
+    FormTemplate,
+    Patient,
+    PublicPacketSubmission,
+)
 from app.services.staff_service import FORM_REQUEST_EXPIRY_GRACE_HOURS, _log_activity, _now
 
 _GRACE = timedelta(hours=FORM_REQUEST_EXPIRY_GRACE_HOURS)
@@ -133,3 +143,83 @@ async def submit_form(
     )
     remaining = len(result.scalars().all())
     return remaining
+
+
+async def get_packet_by_code(db: AsyncSession, code: str) -> FormPacket | None:
+    result = await db.execute(select(FormPacket).where(FormPacket.public_code == code))
+    return result.scalar_one_or_none()
+
+
+async def get_packet_branding(db: AsyncSession, packet: FormPacket) -> dict:
+    practice = await db.get(Practice, packet.practice_id)
+    location = await db.get(Location, packet.location_id)
+    return {
+        "practice_name": practice.name if practice else "",
+        "practice_logo_url": practice.logo_url if practice else None,
+        "location_name": location.name if location else "",
+        "location_address": ", ".join(p for p in [location.address if location else "", location.city if location else ""] if p),
+        "location_phone": location.phone if location else "",
+    }
+
+
+async def get_packet_forms(db: AsyncSession, packet: FormPacket) -> list[dict]:
+    result = await db.execute(
+        select(FormTemplate).where(
+            FormTemplate.id.in_(packet.form_template_ids),
+            FormTemplate.archived_at.is_(None),
+        )
+    )
+    templates = {str(t.id): t for t in result.scalars().all()}
+    out: list[dict] = []
+    for tid in packet.form_template_ids:
+        tpl = templates.get(tid)
+        if tpl is None:
+            continue
+        out.append(
+            {
+                "template_id": tpl.id,
+                "name": tpl.name,
+                "display_type": tpl.display_type,
+                "page_count": tpl.page_count,
+                "fields": tpl.fields,
+            }
+        )
+    return out
+
+
+async def submit_packet(
+    db: AsyncSession,
+    packet: FormPacket,
+    *,
+    first_name: str,
+    last_name: str,
+    dob,
+    phone: str,
+    email: str,
+    submissions: list[dict],
+) -> PublicPacketSubmission:
+    valid_ids = set(packet.form_template_ids)
+    result = await db.execute(select(FormTemplate).where(FormTemplate.id.in_([s["template_id"] for s in submissions])))
+    names = {str(t.id): t.name for t in result.scalars().all()}
+
+    entries = []
+    for s in submissions:
+        tid = str(s["template_id"])
+        if tid not in valid_ids:
+            raise ValueError("Some forms are not part of this packet")
+        entries.append({"template_id": tid, "form_name": names.get(tid, ""), "answers": s["answers"]})
+
+    sub = PublicPacketSubmission(
+        practice_id=packet.practice_id,
+        location_id=packet.location_id,
+        form_packet_id=packet.id,
+        first_name=first_name.strip(),
+        last_name=last_name.strip(),
+        dob=dob,
+        phone=phone.strip(),
+        email=email.strip(),
+        submissions=entries,
+    )
+    db.add(sub)
+    await db.flush()
+    return sub

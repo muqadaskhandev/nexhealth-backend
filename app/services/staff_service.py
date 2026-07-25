@@ -32,6 +32,7 @@ from app.models.staff import (
     PatientActivity,
     PaymentLink,
     PaymentStatus,
+    PublicPacketSubmission,
     WaitlistEntry,
     WaitlistStatus,
 )
@@ -623,6 +624,104 @@ async def update_form_packet(db: AsyncSession, packet: FormPacket, data: FormPac
 
 async def delete_form_packet(db: AsyncSession, packet: FormPacket) -> None:
     await db.delete(packet)
+    await db.flush()
+
+
+async def enable_packet_public_access(db: AsyncSession, packet: FormPacket) -> FormPacket:
+    """Idempotent: returns the packet's existing public code, generating one on first use."""
+    if packet.public_code:
+        return packet
+    for _ in range(5):
+        candidate = security.generate_opaque_token()[:11]
+        existing = await db.execute(select(FormPacket.id).where(FormPacket.public_code == candidate))
+        if existing.scalar_one_or_none() is None:
+            packet.public_code = candidate
+            break
+    await db.flush()
+    return packet
+
+
+async def list_public_packet_submissions(db: AsyncSession, ctx: StaffContext) -> list[dict]:
+    result = await db.execute(
+        select(PublicPacketSubmission, FormPacket)
+        .join(FormPacket, FormPacket.id == PublicPacketSubmission.form_packet_id)
+        .where(
+            PublicPacketSubmission.practice_id == ctx.practice_id,
+            PublicPacketSubmission.location_id == ctx.location_id,
+            PublicPacketSubmission.assigned_patient_id.is_(None),
+        )
+        .order_by(PublicPacketSubmission.created_at.desc())
+    )
+    out: list[dict] = []
+    for sub, packet in result.all():
+        out.append(
+            {
+                "id": sub.id,
+                "form_packet_id": sub.form_packet_id,
+                "packet_name": packet.name,
+                "first_name": sub.first_name,
+                "last_name": sub.last_name,
+                "dob": sub.dob,
+                "phone": sub.phone,
+                "email": sub.email,
+                "form_names": [s.get("form_name", "") for s in sub.submissions],
+                "created_at": sub.created_at,
+            }
+        )
+    return out
+
+
+async def assign_public_packet_submission(
+    db: AsyncSession, ctx: StaffContext, submission_id: uuid.UUID, patient_id: uuid.UUID
+) -> None:
+    sub = await db.get(PublicPacketSubmission, submission_id)
+    if sub is None or sub.practice_id != ctx.practice_id or sub.location_id != ctx.location_id:
+        raise ValueError("Submission not found")
+    if sub.assigned_patient_id is not None:
+        raise ValueError("This submission has already been assigned")
+
+    patient = await db.get(Patient, patient_id)
+    if patient is None or patient.practice_id != ctx.practice_id or patient.location_id != ctx.location_id:
+        raise ValueError("Patient not found")
+
+    names: list[str] = []
+    for entry in sub.submissions:
+        template_id = entry.get("template_id")
+        form_name = entry.get("form_name", "")
+        answers = entry.get("answers", {})
+        req = FormRequest(
+            practice_id=ctx.practice_id,
+            location_id=ctx.location_id,
+            patient_id=patient.id,
+            form_template_id=uuid.UUID(template_id),
+            status=FormRequestStatus.COMPLETED,
+            sent_at=sub.created_at,
+            expires_at=sub.created_at,
+        )
+        db.add(req)
+        await db.flush()
+        db.add(
+            FormSubmission(
+                form_request_id=req.id,
+                patient_id=patient.id,
+                form_name=form_name,
+                device="web",
+                sync_status="complete",
+                answers=answers,
+                submitted_at=sub.created_at,
+            )
+        )
+        names.append(form_name)
+
+    sub.assigned_patient_id = patient.id
+    sub.synced_at = _now()
+
+    await _log_activity(
+        db,
+        patient_id=patient.id,
+        activity_type=ActivityType.FORM,
+        title=f"Form{'s' if len(names) != 1 else ''} synced from public packet link — {', '.join(names)}",
+    )
     await db.flush()
 
 

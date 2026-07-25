@@ -33,6 +33,8 @@ from app.schemas.staff import (
     PaymentLinkCreate,
     PaymentLinkOut,
     ArchiveFormRequestsRequest,
+    AssignPublicPacketSubmissionRequest,
+    PublicPacketSubmissionOut,
     ReactivateFormRequestsRequest,
     SendFormRequest,
     SendMessageRequest,
@@ -440,6 +442,44 @@ async def delete_form_packet(
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Packet not found")
     await staff_service.delete_form_packet(db, packet)
     await db.commit()
+
+
+@router.post("/api/forms/packets/{packet_id}/public-access", response_model=FormPacketOut)
+async def enable_packet_public_access(
+    packet_id: uuid.UUID,
+    _: User = Depends(require_admin),
+    ctx: StaffContext = Depends(get_staff_context),
+    db: AsyncSession = Depends(get_db),
+):
+    packet = await staff_service.get_form_packet(db, ctx, packet_id)
+    if packet is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Packet not found")
+    packet = await staff_service.enable_packet_public_access(db, packet)
+    await db.commit()
+    return FormPacketOut.model_validate(packet)
+
+
+@router.get("/api/forms/public-submissions", response_model=list[PublicPacketSubmissionOut])
+async def public_packet_submissions(
+    ctx: StaffContext = Depends(get_staff_context), db: AsyncSession = Depends(get_db)
+):
+    rows = await staff_service.list_public_packet_submissions(db, ctx)
+    return [PublicPacketSubmissionOut(**row) for row in rows]
+
+
+@router.post("/api/forms/public-submissions/{submission_id}/assign")
+async def assign_public_packet_submission(
+    submission_id: uuid.UUID,
+    payload: AssignPublicPacketSubmissionRequest,
+    ctx: StaffContext = Depends(get_staff_context),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        await staff_service.assign_public_packet_submission(db, ctx, submission_id, payload.patient_id)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+    await db.commit()
+    return {"message": "Submission assigned"}
 
 
 @router.get("/api/forms/submissions", response_model=list[FormSubmissionOut])

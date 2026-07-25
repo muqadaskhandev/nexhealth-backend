@@ -64,3 +64,39 @@ class PublicSubmitRequest(BaseModel):
 
 class PublicSubmitOut(BaseModel):
     remaining: int
+
+
+class PublicPacketFormOut(BaseModel):
+    template_id: uuid.UUID
+    name: str
+    display_type: str
+    page_count: int
+    fields: list[PublicFormFieldOut]
+
+
+class PublicPacketInfoOut(BaseModel):
+    packet_name: str
+    practice_name: str
+    practice_logo_url: str | None
+    location_name: str
+    location_address: str
+    location_phone: str
+    forms: list[PublicPacketFormOut]
+
+
+class PublicPacketFormAnswers(BaseModel):
+    template_id: uuid.UUID
+    answers: dict[str, Any] = Field(default_factory=dict)
+
+
+class PublicPacketSubmitRequest(BaseModel):
+    first_name: str = Field(min_length=1, max_length=120)
+    last_name: str = Field(min_length=1, max_length=120)
+    dob: date
+    phone: str = Field(default="", max_length=40)
+    email: str = Field(default="", max_length=320)
+    submissions: list[PublicPacketFormAnswers] = Field(min_length=1)
+
+
+class PublicPacketSubmitOut(BaseModel):
+    submission_id: uuid.UUID

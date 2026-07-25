@@ -13,6 +13,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.schemas.public_forms import (
+    PublicPacketInfoOut,
+    PublicPacketSubmitOut,
+    PublicPacketSubmitRequest,
     PublicSubmitOut,
     PublicSubmitRequest,
     PublicTokenInfoOut,
@@ -21,11 +24,11 @@ from app.schemas.public_forms import (
 )
 from app.services import public_forms_service
 
-router = APIRouter(prefix="/api/public/forms", tags=["public-forms"])
+router = APIRouter(tags=["public-forms"])
 limiter = Limiter(key_func=get_remote_address)
 
 
-@router.get("/{token}", response_model=PublicTokenInfoOut)
+@router.get("/api/public/forms/{token}", response_model=PublicTokenInfoOut)
 async def get_token_info(token: str, db: AsyncSession = Depends(get_db)):
     token_row = await public_forms_service.get_token(db, token)
     if token_row is None:
@@ -34,7 +37,7 @@ async def get_token_info(token: str, db: AsyncSession = Depends(get_db)):
     return PublicTokenInfoOut(**branding)
 
 
-@router.post("/{token}/verify", response_model=PublicVerifyOut)
+@router.post("/api/public/forms/{token}/verify", response_model=PublicVerifyOut)
 @limiter.limit("10/minute")
 async def verify(
     request: Request,
@@ -59,7 +62,7 @@ async def verify(
     )
 
 
-@router.post("/{token}/submit", response_model=PublicSubmitOut)
+@router.post("/api/public/forms/{token}/submit", response_model=PublicSubmitOut)
 @limiter.limit("20/minute")
 async def submit(
     request: Request,
@@ -81,3 +84,41 @@ async def submit(
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
     await db.commit()
     return PublicSubmitOut(remaining=remaining)
+
+
+@router.get("/api/public/packets/{code}", response_model=PublicPacketInfoOut)
+async def get_packet_info(code: str, db: AsyncSession = Depends(get_db)):
+    packet = await public_forms_service.get_packet_by_code(db, code)
+    if packet is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="This link is invalid.")
+    branding = await public_forms_service.get_packet_branding(db, packet)
+    forms = await public_forms_service.get_packet_forms(db, packet)
+    return PublicPacketInfoOut(packet_name=packet.name, forms=forms, **branding)
+
+
+@router.post("/api/public/packets/{code}/submit", response_model=PublicPacketSubmitOut)
+@limiter.limit("10/minute")
+async def submit_packet(
+    request: Request,
+    code: str,
+    payload: PublicPacketSubmitRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    packet = await public_forms_service.get_packet_by_code(db, code)
+    if packet is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="This link is invalid.")
+    try:
+        sub = await public_forms_service.submit_packet(
+            db,
+            packet,
+            first_name=payload.first_name,
+            last_name=payload.last_name,
+            dob=payload.dob,
+            phone=payload.phone,
+            email=payload.email,
+            submissions=[s.model_dump() for s in payload.submissions],
+        )
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+    await db.commit()
+    return PublicPacketSubmitOut(submission_id=sub.id)

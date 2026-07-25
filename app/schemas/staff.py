@@ -204,7 +204,27 @@ class FormPacketOut(BaseModel):
     id: uuid.UUID
     name: str
     form_template_ids: list[uuid.UUID]
+    public_code: str | None
     created_at: datetime
+
+
+class PublicPacketSubmissionOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    form_packet_id: uuid.UUID
+    packet_name: str = ""
+    first_name: str
+    last_name: str
+    dob: date | None
+    phone: str
+    email: str
+    form_names: list[str] = Field(default_factory=list)
+    created_at: datetime
+
+
+class AssignPublicPacketSubmissionRequest(BaseModel):
+    patient_id: uuid.UUID
 
 
 class FormRequestFormOut(BaseModel):

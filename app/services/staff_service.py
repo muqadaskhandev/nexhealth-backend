@@ -32,6 +32,8 @@ from app.models.staff import (
 from app.schemas.staff import (
     AppointmentCreate,
     AppointmentUpdate,
+    FormTemplateCreate,
+    FormTemplateUpdate,
     PatientCreate,
     PatientUpdate,
     PaymentLinkCreate,
@@ -39,6 +41,12 @@ from app.schemas.staff import (
     SendMessageRequest,
     WaitlistCreate,
 )
+from app.services import form_upload_storage
+
+FORM_FIELD_TYPES = {
+    "text", "textarea", "email", "number", "phone",
+    "checkbox", "select_boxes", "dropdown", "signature", "date",
+}
 
 
 def _now() -> datetime:
@@ -303,13 +311,86 @@ async def add_waitlist(
 
 
 # ── Forms ────────────────────────────────────────────────────────────────────
+def _validate_form_fields(data: FormTemplateCreate | FormTemplateUpdate) -> None:
+    for field in data.fields:
+        if not field.label.strip():
+            raise ValueError("Every field needs a label")
+        if field.type not in FORM_FIELD_TYPES:
+            raise ValueError(f"Unknown field type: {field.type}")
+        if not (1 <= field.page <= data.page_count):
+            raise ValueError(f"Field '{field.label}' is on a page outside the form's page count")
+
+
 async def list_form_templates(db: AsyncSession, ctx: StaffContext) -> list[FormTemplate]:
     result = await db.execute(
         select(FormTemplate)
-        .where(FormTemplate.practice_id == ctx.practice_id)
+        .where(FormTemplate.practice_id == ctx.practice_id, FormTemplate.location_id == ctx.location_id)
         .order_by(FormTemplate.name)
     )
     return list(result.scalars().all())
+
+
+async def get_form_template(db: AsyncSession, ctx: StaffContext, template_id: uuid.UUID) -> FormTemplate | None:
+    tpl = await db.get(FormTemplate, template_id)
+    if tpl is None or tpl.practice_id != ctx.practice_id or tpl.location_id != ctx.location_id:
+        return None
+    return tpl
+
+
+async def create_form_template(db: AsyncSession, ctx: StaffContext, data: FormTemplateCreate) -> FormTemplate:
+    if not data.name.strip():
+        raise ValueError("Name is required")
+    _validate_form_fields(data)
+    tpl = FormTemplate(
+        practice_id=ctx.practice_id,
+        location_id=ctx.location_id,
+        name=data.name.strip(),
+        form_type=data.form_type,
+        display_type=data.display_type,
+        fields=[f.model_dump() for f in data.fields],
+        page_count=data.page_count,
+        source="build",
+        status="active",
+    )
+    db.add(tpl)
+    await db.flush()
+    return tpl
+
+
+async def update_form_template(
+    db: AsyncSession, template: FormTemplate, data: FormTemplateUpdate
+) -> FormTemplate:
+    if not data.name.strip():
+        raise ValueError("Name is required")
+    _validate_form_fields(data)
+    template.name = data.name.strip()
+    template.form_type = data.form_type
+    template.display_type = data.display_type
+    template.fields = [f.model_dump() for f in data.fields]
+    template.page_count = data.page_count
+    await db.flush()
+    return template
+
+
+async def create_digitized_form_template(
+    db: AsyncSession, ctx: StaffContext, name: str, notes: str, upload
+) -> FormTemplate:
+    if not name.strip():
+        raise ValueError("Name is required")
+    file_url = await form_upload_storage.save_form_upload(upload)
+    tpl = FormTemplate(
+        practice_id=ctx.practice_id,
+        location_id=ctx.location_id,
+        name=name.strip(),
+        source="digitize",
+        status="digitizing",
+        digitize_notes=notes,
+        uploaded_file_url=file_url,
+        fields=[],
+    )
+    db.add(tpl)
+    await db.flush()
+    return tpl
 
 
 async def list_form_submissions(
@@ -328,7 +409,7 @@ async def send_form(
     db: AsyncSession, ctx: StaffContext, data: SendFormRequest
 ) -> FormRequest:
     tpl = await db.get(FormTemplate, data.form_template_id)
-    if tpl is None or tpl.practice_id != ctx.practice_id:
+    if tpl is None or tpl.practice_id != ctx.practice_id or tpl.location_id != ctx.location_id:
         raise ValueError("Form template not found")
     req = FormRequest(
         practice_id=ctx.practice_id,

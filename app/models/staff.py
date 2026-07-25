@@ -165,8 +165,18 @@ class FormTemplate(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     practice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("practices.id", ondelete="CASCADE"))
+    location_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("locations.id", ondelete="CASCADE"), index=True
+    )
     name: Mapped[str] = mapped_column(String(200), nullable=False)
-    form_type: Mapped[str] = mapped_column(String(80), nullable=False, default="intake")
+    form_type: Mapped[str] = mapped_column(String(80), nullable=False, default="")
+    source: Mapped[str] = mapped_column(String(20), nullable=False, default="build")
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
+    display_type: Mapped[str] = mapped_column(String(20), nullable=False, default="wizard")
+    fields: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    page_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    uploaded_file_url: Mapped[str | None] = mapped_column(String, nullable=True)
+    digitize_notes: Mapped[str] = mapped_column(Text, nullable=False, default="")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

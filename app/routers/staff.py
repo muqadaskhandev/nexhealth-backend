@@ -4,11 +4,13 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.dependencies import require_admin
 from app.core.staff_context import StaffContext, get_staff_context
 from app.database import get_db
+from app.models.user import User
 from app.schemas.staff import (
     ActivityOut,
     AppointmentCreate,
@@ -16,7 +18,9 @@ from app.schemas.staff import (
     AppointmentUpdate,
     DashboardStats,
     FormSubmissionOut,
+    FormTemplateCreate,
     FormTemplateOut,
+    FormTemplateUpdate,
     MessageOut,
     PatientCreate,
     PatientOut,
@@ -252,6 +256,57 @@ async def form_templates(
 ):
     rows = await staff_service.list_form_templates(db, ctx)
     return [FormTemplateOut.model_validate(t) for t in rows]
+
+
+@router.post("/api/forms/templates", response_model=FormTemplateOut, status_code=status.HTTP_201_CREATED)
+async def create_form_template(
+    payload: FormTemplateCreate,
+    _: User = Depends(require_admin),
+    ctx: StaffContext = Depends(get_staff_context),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        tpl = await staff_service.create_form_template(db, ctx, payload)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+    await db.commit()
+    return FormTemplateOut.model_validate(tpl)
+
+
+@router.patch("/api/forms/templates/{template_id}", response_model=FormTemplateOut)
+async def update_form_template(
+    template_id: uuid.UUID,
+    payload: FormTemplateUpdate,
+    _: User = Depends(require_admin),
+    ctx: StaffContext = Depends(get_staff_context),
+    db: AsyncSession = Depends(get_db),
+):
+    tpl = await staff_service.get_form_template(db, ctx, template_id)
+    if tpl is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Form template not found")
+    try:
+        tpl = await staff_service.update_form_template(db, tpl, payload)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+    await db.commit()
+    return FormTemplateOut.model_validate(tpl)
+
+
+@router.post("/api/forms/templates/digitize", response_model=FormTemplateOut, status_code=status.HTTP_201_CREATED)
+async def digitize_form_template(
+    file: UploadFile = File(...),
+    name: str = Form(...),
+    notes: str = Form(default=""),
+    _: User = Depends(require_admin),
+    ctx: StaffContext = Depends(get_staff_context),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        tpl = await staff_service.create_digitized_form_template(db, ctx, name, notes, file)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+    await db.commit()
+    return FormTemplateOut.model_validate(tpl)
 
 
 @router.get("/api/forms/submissions", response_model=list[FormSubmissionOut])

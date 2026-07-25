@@ -130,12 +130,41 @@ class WaitlistCreate(BaseModel):
     notes: str = ""
 
 
+class FormFieldSchema(BaseModel):
+    id: str
+    type: str
+    label: str
+    required: bool = False
+    options: list[str] = Field(default_factory=list)
+    page: int = 1
+
+
+class FormTemplateCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    form_type: str = ""
+    display_type: str = "wizard"
+    fields: list[FormFieldSchema] = Field(min_length=1)
+    page_count: int = Field(default=1, ge=1)
+
+
+class FormTemplateUpdate(FormTemplateCreate):
+    pass
+
+
 class FormTemplateOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
     name: str
     form_type: str
+    source: str
+    status: str
+    display_type: str
+    fields: list[FormFieldSchema]
+    page_count: int
+    uploaded_file_url: str | None
+    digitize_notes: str
+    created_at: datetime
 
 
 class FormSubmissionOut(BaseModel):

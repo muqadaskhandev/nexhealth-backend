@@ -4,7 +4,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 from app.models.practice import EhrSystem, SubscriptionPlan, SyncStatus
 from app.schemas.location import LocationOut
@@ -106,7 +106,20 @@ class InvitePreview(BaseModel):
 
 class AcceptInviteRequest(BaseModel):
     token: str = Field(min_length=1)
-    password: str = Field(min_length=8, max_length=200)
+    password: str = Field(min_length=6, max_length=200)
+
+    @field_validator("password")
+    @classmethod
+    def strong_password(cls, value: str) -> str:
+        if len(value) < 6:
+            raise ValueError("Password must be at least 6 characters")
+        if not any(c.isupper() for c in value):
+            raise ValueError("Password must include at least one uppercase letter")
+        if not any(c.isdigit() for c in value):
+            raise ValueError("Password must include at least one number")
+        if "@" not in value:
+            raise ValueError('Password must include at least one "@" symbol')
+        return value
 
 
 class StaffInviteRequest(BaseModel):

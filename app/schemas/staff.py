@@ -195,6 +195,27 @@ class FormPacketOut(BaseModel):
     created_at: datetime
 
 
+class FormRequestFormOut(BaseModel):
+    id: uuid.UUID
+    name: str
+
+
+class FormRequestBatchOut(BaseModel):
+    patient_id: uuid.UUID
+    patient_name: str
+    patient_initials: str
+    request_ids: list[uuid.UUID]
+    sent_at: datetime
+    expires_at: datetime
+    forms: list[FormRequestFormOut]
+    status: str
+
+
+class ReactivateFormRequestsRequest(BaseModel):
+    request_ids: list[uuid.UUID] = Field(min_length=1)
+    expires_at: datetime
+
+
 class FormSubmissionOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

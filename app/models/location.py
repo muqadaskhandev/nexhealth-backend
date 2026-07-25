@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, String, UniqueConstraint, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -44,6 +44,8 @@ class Location(Base):
     set_availability_by_operatory: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     ask_for_insurance: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     reserve_with_google: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    form_expiration_amount: Mapped[int] = mapped_column(Integer, default=7, nullable=False)
+    form_expiration_unit: Mapped[str] = mapped_column(String(20), default="days", nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

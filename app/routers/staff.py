@@ -22,6 +22,7 @@ from app.schemas.staff import (
     FormPacketCreate,
     FormPacketOut,
     FormPacketUpdate,
+    FormRequestBatchOut,
     FormTemplateCreate,
     FormTemplateOut,
     FormTemplateUpdate,
@@ -31,6 +32,7 @@ from app.schemas.staff import (
     PatientUpdate,
     PaymentLinkCreate,
     PaymentLinkOut,
+    ReactivateFormRequestsRequest,
     SendFormRequest,
     SendMessageRequest,
     VerifyInsuranceRequest,
@@ -471,6 +473,32 @@ async def send_form(
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
     await db.commit()
     return {"message": "Form(s) sent to patient", "count": len(requests)}
+
+
+@router.get("/api/forms/requests", response_model=list[FormRequestBatchOut])
+async def form_requests(
+    tab: str = Query(default="all"),
+    ctx: StaffContext = Depends(get_staff_context),
+    db: AsyncSession = Depends(get_db),
+):
+    if tab not in {"active", "expired", "synced", "all"}:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid tab")
+    rows = await staff_service.list_form_request_batches(db, ctx, tab=tab)
+    return [FormRequestBatchOut(**r) for r in rows]
+
+
+@router.post("/api/forms/requests/reactivate")
+async def reactivate_form_requests(
+    payload: ReactivateFormRequestsRequest,
+    ctx: StaffContext = Depends(get_staff_context),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        await staff_service.reactivate_form_requests(db, ctx, payload.request_ids, payload.expires_at)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+    await db.commit()
+    return {"message": "Form request moved to active"}
 
 
 # ── Communications ───────────────────────────────────────────────────────────

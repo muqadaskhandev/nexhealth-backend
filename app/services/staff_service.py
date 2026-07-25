@@ -9,6 +9,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.staff_context import StaffContext
+from app.models.location import Location
 from app.models.staff import (
     ActivityType,
     Appointment,
@@ -57,6 +58,17 @@ FORM_FIELD_TYPES = {
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+FORM_REQUEST_EXPIRY_GRACE_HOURS = 12
+
+
+def _compute_expires_at(amount: int, unit: str, from_dt: datetime) -> datetime:
+    if unit == "weeks":
+        return from_dt + timedelta(weeks=amount)
+    if unit == "months":
+        return from_dt + timedelta(days=30 * amount)
+    return from_dt + timedelta(days=amount)
 
 
 async def _log_activity(
@@ -615,7 +627,13 @@ async def send_form(
         raise ValueError(f"Cannot send an archived form: {', '.join(archived)}")
 
     now = _now()
-    expires_at = data.expires_at or (now + timedelta(days=7))
+    if data.expires_at is not None:
+        expires_at = data.expires_at
+    else:
+        location = await db.get(Location, ctx.location_id)
+        amount = location.form_expiration_amount if location else 7
+        unit = location.form_expiration_unit if location else "days"
+        expires_at = _compute_expires_at(amount, unit, now)
     if expires_at <= now:
         raise ValueError("Expiration date must be in the future")
 
@@ -647,6 +665,79 @@ async def send_form(
         title=f"Form{'s' if len(templates) != 1 else ''} sent — {names}",
     )
     return requests
+
+
+async def list_form_request_batches(db: AsyncSession, ctx: StaffContext, *, tab: str) -> list[dict]:
+    result = await db.execute(
+        select(FormRequest, FormTemplate, Patient)
+        .join(FormTemplate, FormTemplate.id == FormRequest.form_template_id)
+        .join(Patient, Patient.id == FormRequest.patient_id)
+        .where(FormRequest.practice_id == ctx.practice_id, FormRequest.location_id == ctx.location_id)
+        .order_by(FormRequest.sent_at.desc())
+    )
+    rows = result.all()
+
+    now = _now()
+    batches: dict[tuple, dict] = {}
+    order: list[tuple] = []
+    for req, tpl, patient in rows:
+        key = (req.patient_id, req.sent_at)
+        if key not in batches:
+            batches[key] = {
+                "patient_id": req.patient_id,
+                "patient_name": f"{patient.first_name} {patient.last_name}".strip(),
+                "patient_initials": f"{patient.first_name[:1]}{patient.last_name[:1]}".upper(),
+                "request_ids": [],
+                "sent_at": req.sent_at,
+                "expires_at": req.expires_at,
+                "forms": [],
+                "statuses": [],
+            }
+            order.append(key)
+        b = batches[key]
+        b["request_ids"].append(req.id)
+        b["forms"].append({"id": tpl.id, "name": tpl.name})
+        b["statuses"].append(req.status)
+        if req.expires_at > b["expires_at"]:
+            b["expires_at"] = req.expires_at
+
+    out: list[dict] = []
+    for key in order:
+        b = batches[key]
+        statuses = b.pop("statuses")
+        if all(s == FormRequestStatus.COMPLETED for s in statuses):
+            status = "synced"
+        elif now > b["expires_at"] + timedelta(hours=FORM_REQUEST_EXPIRY_GRACE_HOURS):
+            status = "expired"
+        else:
+            status = "active"
+        if tab != "all" and status != tab:
+            continue
+        b["status"] = status
+        out.append(b)
+    return out
+
+
+async def reactivate_form_requests(
+    db: AsyncSession, ctx: StaffContext, request_ids: list[uuid.UUID], expires_at: datetime
+) -> None:
+    now = _now()
+    if expires_at <= now:
+        raise ValueError("Due date must be in the future")
+    result = await db.execute(
+        select(FormRequest).where(
+            FormRequest.id.in_(request_ids),
+            FormRequest.practice_id == ctx.practice_id,
+            FormRequest.location_id == ctx.location_id,
+        )
+    )
+    requests = result.scalars().all()
+    if len(requests) != len(set(request_ids)):
+        raise ValueError("Some form requests could not be found")
+    for req in requests:
+        req.expires_at = expires_at
+        req.status = FormRequestStatus.SENT
+    await db.flush()
 
 
 # ── Messages ─────────────────────────────────────────────────────────────────

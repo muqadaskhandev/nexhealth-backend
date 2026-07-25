@@ -26,6 +26,8 @@ class LocationOut(BaseModel):
     set_availability_by_operatory: bool = False
     ask_for_insurance: bool = False
     reserve_with_google: bool = False
+    form_expiration_amount: int = 7
+    form_expiration_unit: str = "days"
 
 
 class SwitchLocationRequest(BaseModel):
@@ -46,6 +48,8 @@ class LocationUpdate(BaseModel):
     set_availability_by_operatory: bool | None = None
     ask_for_insurance: bool | None = None
     reserve_with_google: bool | None = None
+    form_expiration_amount: int | None = Field(default=None, ge=1)
+    form_expiration_unit: str | None = None
 
 
 class LogoCopyRequest(BaseModel):

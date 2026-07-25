@@ -8,6 +8,8 @@ from decimal import Decimal
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
+from app.core import security
 from app.core.staff_context import StaffContext
 from app.models.appointment_types import AppointmentTypeDef
 from app.models.location import Location
@@ -15,6 +17,7 @@ from app.models.staff import (
     ActivityType,
     Appointment,
     AppointmentStatus,
+    FormAccessToken,
     FormPacket,
     FormRequest,
     FormRequestStatus,
@@ -72,6 +75,29 @@ def _compute_expires_at(amount: int, unit: str, from_dt: datetime) -> datetime:
     if unit == "months":
         return from_dt + timedelta(days=30 * amount)
     return from_dt + timedelta(days=amount)
+
+
+async def create_form_access_token(
+    db: AsyncSession,
+    *,
+    practice_id: uuid.UUID,
+    location_id: uuid.UUID,
+    patient_id: uuid.UUID,
+    expires_at: datetime,
+) -> str:
+    """Creates an opaque link token for the patient forms portal and returns the raw value (never stored)."""
+    raw = security.generate_opaque_token()
+    db.add(
+        FormAccessToken(
+            token_hash=security.hash_token(raw),
+            practice_id=practice_id,
+            location_id=location_id,
+            patient_id=patient_id,
+            expires_at=expires_at,
+        )
+    )
+    await db.flush()
+    return raw
 
 
 async def _log_activity(
@@ -675,12 +701,18 @@ async def send_form(
         requests.append(req)
     await db.flush()
 
+    raw_token = await create_form_access_token(
+        db, practice_id=ctx.practice_id, location_id=ctx.location_id, patient_id=data.patient_id, expires_at=expires_at
+    )
+    link = f"{settings.frontend_url}/forms/{raw_token}"
+
     names = ", ".join(t.name for t in templates)
-    body = data.message.strip() if data.message and data.message.strip() else f"Please fill out the following form(s): {names}"
+    text = data.message.strip() if data.message and data.message.strip() else f"Please fill out the following form(s): {names}"
+    body = f"{text}\n{link}"
     await send_message(db, ctx, SendMessageRequest(patient_id=data.patient_id, body=body, channel="sms"))
     if data.email_note and data.email_note.strip():
         await send_message(
-            db, ctx, SendMessageRequest(patient_id=data.patient_id, body=data.email_note.strip(), channel="email")
+            db, ctx, SendMessageRequest(patient_id=data.patient_id, body=f"{data.email_note.strip()}\n{link}", channel="email")
         )
 
     await _log_activity(
@@ -788,8 +820,13 @@ async def evaluate_automatic_form_requests(
         )
     await db.flush()
 
+    raw_token = await create_form_access_token(
+        db, practice_id=ctx.practice_id, location_id=ctx.location_id, patient_id=appointment.patient_id, expires_at=expires_at
+    )
+    link = f"{settings.frontend_url}/forms/{raw_token}"
+
     names = ", ".join(t.name for t in filtered)
-    body = f"Please fill out the following form(s): {names}"
+    body = f"Please fill out the following form(s): {names}\n{link}"
     await send_message(
         db, ctx, SendMessageRequest(patient_id=appointment.patient_id, body=body, channel="sms")
     )

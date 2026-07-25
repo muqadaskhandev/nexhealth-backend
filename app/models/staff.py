@@ -237,7 +237,24 @@ class FormSubmission(Base):
     form_name: Mapped[str] = mapped_column(String(200), nullable=False)
     device: Mapped[str] = mapped_column(String(80), nullable=False, default="web")
     sync_status: Mapped[str] = mapped_column(String(40), nullable=False, default="complete")
+    answers: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     submitted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class FormAccessToken(Base):
+    """Opaque token granting a patient (no staff login) access to their pending forms."""
+
+    __tablename__ = "form_access_tokens"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True, nullable=False)
+    practice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("practices.id", ondelete="CASCADE"))
+    location_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("locations.id", ondelete="CASCADE"))
+    patient_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("patients.id", ondelete="CASCADE"))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 

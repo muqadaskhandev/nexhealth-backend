@@ -404,6 +404,82 @@ async def create_digitized_form_template(
     return tpl
 
 
+async def duplicate_form_template(db: AsyncSession, ctx: StaffContext, template: FormTemplate) -> FormTemplate:
+    copy = FormTemplate(
+        practice_id=ctx.practice_id,
+        location_id=ctx.location_id,
+        name=f"{template.name} (copy)",
+        form_type=template.form_type,
+        source=template.source,
+        status=template.status,
+        display_type=template.display_type,
+        fields=template.fields,
+        page_count=template.page_count,
+        uploaded_file_url=template.uploaded_file_url,
+        digitize_notes=template.digitize_notes,
+    )
+    db.add(copy)
+    await db.flush()
+    return copy
+
+
+async def copy_form_templates(
+    db: AsyncSession, ctx: StaffContext, template_ids: list[uuid.UUID], location_ids: list[uuid.UUID]
+) -> int:
+    result = await db.execute(
+        select(FormTemplate).where(
+            FormTemplate.id.in_(template_ids),
+            FormTemplate.practice_id == ctx.practice_id,
+            FormTemplate.location_id == ctx.location_id,
+        )
+    )
+    sources = result.scalars().all()
+    if len(sources) != len(set(template_ids)):
+        raise ValueError("Some forms could not be found in your current location")
+
+    target_locations = [lid for lid in dict.fromkeys(location_ids) if lid != ctx.location_id]
+    if not target_locations:
+        raise ValueError("Select at least one other location to copy to")
+
+    copied = 0
+    for loc_id in target_locations:
+        for src in sources:
+            existing_result = await db.execute(
+                select(FormTemplate).where(
+                    FormTemplate.practice_id == ctx.practice_id,
+                    FormTemplate.location_id == loc_id,
+                    FormTemplate.name == src.name,
+                )
+            )
+            existing = existing_result.scalar_one_or_none()
+            if existing:
+                existing.form_type = src.form_type
+                existing.source = src.source
+                existing.status = src.status
+                existing.display_type = src.display_type
+                existing.fields = src.fields
+                existing.page_count = src.page_count
+                existing.uploaded_file_url = src.uploaded_file_url
+                existing.digitize_notes = src.digitize_notes
+            else:
+                db.add(FormTemplate(
+                    practice_id=ctx.practice_id,
+                    location_id=loc_id,
+                    name=src.name,
+                    form_type=src.form_type,
+                    source=src.source,
+                    status=src.status,
+                    display_type=src.display_type,
+                    fields=src.fields,
+                    page_count=src.page_count,
+                    uploaded_file_url=src.uploaded_file_url,
+                    digitize_notes=src.digitize_notes,
+                ))
+            copied += 1
+    await db.flush()
+    return copied
+
+
 async def list_form_submissions(
     db: AsyncSession, ctx: StaffContext
 ) -> list[tuple[FormSubmission, Patient]]:

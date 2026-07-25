@@ -171,6 +171,11 @@ class FormTemplateOut(BaseModel):
     created_at: datetime
 
 
+class CopyFormTemplatesRequest(BaseModel):
+    template_ids: list[uuid.UUID] = Field(min_length=1)
+    location_ids: list[uuid.UUID] = Field(min_length=1)
+
+
 class FormSubmissionOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

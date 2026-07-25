@@ -18,6 +18,7 @@ from app.schemas.staff import (
     AppointmentUpdate,
     DashboardStats,
     FormSubmissionOut,
+    CopyFormTemplatesRequest,
     FormTemplateCreate,
     FormTemplateOut,
     FormTemplateUpdate,
@@ -307,6 +308,36 @@ async def digitize_form_template(
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
     await db.commit()
     return FormTemplateOut.model_validate(tpl)
+
+
+@router.post("/api/forms/templates/copy", status_code=status.HTTP_200_OK)
+async def copy_form_templates(
+    payload: CopyFormTemplatesRequest,
+    _: User = Depends(require_admin),
+    ctx: StaffContext = Depends(get_staff_context),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        copied = await staff_service.copy_form_templates(db, ctx, payload.template_ids, payload.location_ids)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+    await db.commit()
+    return {"copied": copied}
+
+
+@router.post("/api/forms/templates/{template_id}/duplicate", response_model=FormTemplateOut, status_code=status.HTTP_201_CREATED)
+async def duplicate_form_template(
+    template_id: uuid.UUID,
+    _: User = Depends(require_admin),
+    ctx: StaffContext = Depends(get_staff_context),
+    db: AsyncSession = Depends(get_db),
+):
+    tpl = await staff_service.get_form_template(db, ctx, template_id)
+    if tpl is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Form template not found")
+    copy = await staff_service.duplicate_form_template(db, ctx, tpl)
+    await db.commit()
+    return FormTemplateOut.model_validate(copy)
 
 
 @router.get("/api/forms/submissions", response_model=list[FormSubmissionOut])

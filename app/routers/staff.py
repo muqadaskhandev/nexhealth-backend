@@ -261,6 +261,14 @@ async def form_templates(
     return [FormTemplateOut.model_validate(t) for t in rows]
 
 
+@router.get("/api/forms/templates/frequent", response_model=list[FormTemplateOut])
+async def frequent_form_templates(
+    ctx: StaffContext = Depends(get_staff_context), db: AsyncSession = Depends(get_db)
+):
+    rows = await staff_service.list_frequent_form_templates(db, ctx)
+    return [FormTemplateOut.model_validate(t) for t in rows]
+
+
 @router.post("/api/forms/templates", response_model=FormTemplateOut, status_code=status.HTTP_201_CREATED)
 async def create_form_template(
     payload: FormTemplateCreate,
@@ -399,11 +407,11 @@ async def send_form(
     db: AsyncSession = Depends(get_db),
 ):
     try:
-        await staff_service.send_form(db, ctx, payload)
+        requests = await staff_service.send_form(db, ctx, payload)
     except ValueError as exc:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc))
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
     await db.commit()
-    return {"message": "Form sent to patient"}
+    return {"message": "Form(s) sent to patient", "count": len(requests)}
 
 
 # ── Communications ───────────────────────────────────────────────────────────

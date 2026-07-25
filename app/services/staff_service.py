@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, time, timezone
+from datetime import datetime, time, timedelta, timezone
 from decimal import Decimal
 
 from sqlalchemy import func, or_, select
@@ -511,27 +511,78 @@ async def list_form_submissions(
     return list(result.all())
 
 
+async def list_frequent_form_templates(
+    db: AsyncSession, ctx: StaffContext, *, limit: int = 3
+) -> list[FormTemplate]:
+    result = await db.execute(
+        select(FormTemplate)
+        .join(FormRequest, FormRequest.form_template_id == FormTemplate.id)
+        .where(
+            FormTemplate.practice_id == ctx.practice_id,
+            FormTemplate.location_id == ctx.location_id,
+            FormTemplate.archived_at.is_(None),
+        )
+        .group_by(FormTemplate.id)
+        .order_by(func.count(FormRequest.id).desc())
+        .limit(limit)
+    )
+    return list(result.scalars().all())
+
+
 async def send_form(
     db: AsyncSession, ctx: StaffContext, data: SendFormRequest
-) -> FormRequest:
-    tpl = await db.get(FormTemplate, data.form_template_id)
-    if tpl is None or tpl.practice_id != ctx.practice_id or tpl.location_id != ctx.location_id:
-        raise ValueError("Form template not found")
-    req = FormRequest(
-        practice_id=ctx.practice_id,
-        location_id=ctx.location_id,
-        patient_id=data.patient_id,
-        form_template_id=data.form_template_id,
+) -> list[FormRequest]:
+    patient = await db.get(Patient, data.patient_id)
+    if patient is None or patient.practice_id != ctx.practice_id:
+        raise ValueError("Patient not found")
+
+    result = await db.execute(
+        select(FormTemplate).where(
+            FormTemplate.id.in_(data.form_template_ids),
+            FormTemplate.practice_id == ctx.practice_id,
+            FormTemplate.location_id == ctx.location_id,
+        )
     )
-    db.add(req)
+    templates = result.scalars().all()
+    if len(templates) != len(set(data.form_template_ids)):
+        raise ValueError("Some forms could not be found")
+    archived = [t.name for t in templates if t.archived_at is not None]
+    if archived:
+        raise ValueError(f"Cannot send an archived form: {', '.join(archived)}")
+
+    now = _now()
+    expires_at = data.expires_at or (now + timedelta(days=7))
+    if expires_at <= now:
+        raise ValueError("Expiration date must be in the future")
+
+    requests: list[FormRequest] = []
+    for tpl in templates:
+        req = FormRequest(
+            practice_id=ctx.practice_id,
+            location_id=ctx.location_id,
+            patient_id=data.patient_id,
+            form_template_id=tpl.id,
+            expires_at=expires_at,
+        )
+        db.add(req)
+        requests.append(req)
     await db.flush()
+
+    names = ", ".join(t.name for t in templates)
+    body = data.message.strip() if data.message and data.message.strip() else f"Please fill out the following form(s): {names}"
+    await send_message(db, ctx, SendMessageRequest(patient_id=data.patient_id, body=body, channel="sms"))
+    if data.email_note and data.email_note.strip():
+        await send_message(
+            db, ctx, SendMessageRequest(patient_id=data.patient_id, body=data.email_note.strip(), channel="email")
+        )
+
     await _log_activity(
         db,
         patient_id=data.patient_id,
         activity_type=ActivityType.FORM,
-        title=f"Form sent — {tpl.name}",
+        title=f"Form{'s' if len(templates) != 1 else ''} sent — {names}",
     )
-    return req
+    return requests
 
 
 # ── Messages ─────────────────────────────────────────────────────────────────

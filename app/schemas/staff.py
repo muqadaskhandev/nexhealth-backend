@@ -192,7 +192,10 @@ class FormSubmissionOut(BaseModel):
 
 class SendFormRequest(BaseModel):
     patient_id: uuid.UUID
-    form_template_id: uuid.UUID
+    form_template_ids: list[uuid.UUID] = Field(min_length=1)
+    expires_at: datetime | None = None
+    message: str | None = None
+    email_note: str | None = None
 
 
 class MessageOut(BaseModel):

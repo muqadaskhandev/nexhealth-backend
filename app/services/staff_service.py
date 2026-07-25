@@ -45,7 +45,10 @@ from app.services import form_upload_storage
 
 FORM_FIELD_TYPES = {
     "text", "textarea", "email", "number", "phone",
-    "checkbox", "select_boxes", "dropdown", "signature", "date",
+    "checkbox", "select_boxes", "dropdown", "radio",
+    "date", "date_entry", "address", "file", "signature",
+    "insurance", "preferred_language", "payment",
+    "content", "location_logo",
 }
 
 
@@ -312,6 +315,7 @@ async def add_waitlist(
 
 # ── Forms ────────────────────────────────────────────────────────────────────
 def _validate_form_fields(data: FormTemplateCreate | FormTemplateUpdate) -> None:
+    field_ids = {f.id for f in data.fields}
     for field in data.fields:
         if not field.label.strip():
             raise ValueError("Every field needs a label")
@@ -319,6 +323,13 @@ def _validate_form_fields(data: FormTemplateCreate | FormTemplateUpdate) -> None
             raise ValueError(f"Unknown field type: {field.type}")
         if not (1 <= field.page <= data.page_count):
             raise ValueError(f"Field '{field.label}' is on a page outside the form's page count")
+        if field.min_length is not None and field.max_length is not None and field.min_length > field.max_length:
+            raise ValueError(f"Field '{field.label}' has a minimum length greater than its maximum length")
+        if field.conditional_field_id:
+            if field.conditional_field_id == field.id:
+                raise ValueError(f"Field '{field.label}' can't be conditional on itself")
+            if field.conditional_field_id not in field_ids:
+                raise ValueError(f"Field '{field.label}' references a condition field that doesn't exist")
 
 
 async def list_form_templates(db: AsyncSession, ctx: StaffContext) -> list[FormTemplate]:

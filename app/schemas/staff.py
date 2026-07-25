@@ -137,6 +137,10 @@ class FormFieldSchema(BaseModel):
     required: bool = False
     options: list[str] = Field(default_factory=list)
     page: int = 1
+    min_length: int | None = None
+    max_length: int | None = None
+    conditional_field_id: str | None = None
+    conditional_value: str = ""
 
 
 class FormTemplateCreate(BaseModel):

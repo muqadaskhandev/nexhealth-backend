@@ -178,6 +178,12 @@ class FormTemplate(Base):
     uploaded_file_url: Mapped[str | None] = mapped_column(String, nullable=True)
     digitize_notes: Mapped[str] = mapped_column(Text, nullable=False, default="")
     archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    send_automatically: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    rule_patient_status: Mapped[str] = mapped_column(String(20), nullable=False, default="any")
+    rule_frequency_months: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    rule_min_age: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    rule_max_age: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    rule_appointment_type_ids: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -217,6 +223,7 @@ class FormRequest(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class FormSubmission(Base):

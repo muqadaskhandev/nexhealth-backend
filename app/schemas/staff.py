@@ -149,6 +149,12 @@ class FormTemplateCreate(BaseModel):
     display_type: str = "wizard"
     fields: list[FormFieldSchema] = Field(min_length=1)
     page_count: int = Field(default=1, ge=1)
+    send_automatically: bool = False
+    rule_patient_status: str = "any"
+    rule_frequency_months: int | None = Field(default=None, ge=1)
+    rule_min_age: int | None = Field(default=None, ge=0)
+    rule_max_age: int | None = Field(default=None, ge=0)
+    rule_appointment_type_ids: list[uuid.UUID] = Field(default_factory=list)
 
 
 class FormTemplateUpdate(FormTemplateCreate):
@@ -169,6 +175,12 @@ class FormTemplateOut(BaseModel):
     uploaded_file_url: str | None
     digitize_notes: str
     archived_at: datetime | None
+    send_automatically: bool
+    rule_patient_status: str
+    rule_frequency_months: int | None
+    rule_min_age: int | None
+    rule_max_age: int | None
+    rule_appointment_type_ids: list[uuid.UUID]
     created_at: datetime
 
 
@@ -214,6 +226,10 @@ class FormRequestBatchOut(BaseModel):
 class ReactivateFormRequestsRequest(BaseModel):
     request_ids: list[uuid.UUID] = Field(min_length=1)
     expires_at: datetime
+
+
+class ArchiveFormRequestsRequest(BaseModel):
+    request_ids: list[uuid.UUID] = Field(min_length=1)
 
 
 class FormSubmissionOut(BaseModel):

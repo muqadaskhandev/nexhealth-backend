@@ -32,6 +32,7 @@ from app.schemas.staff import (
     PatientUpdate,
     PaymentLinkCreate,
     PaymentLinkOut,
+    ArchiveFormRequestsRequest,
     ReactivateFormRequestsRequest,
     SendFormRequest,
     SendMessageRequest,
@@ -499,6 +500,20 @@ async def reactivate_form_requests(
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
     await db.commit()
     return {"message": "Form request moved to active"}
+
+
+@router.post("/api/forms/requests/archive")
+async def archive_form_requests(
+    payload: ArchiveFormRequestsRequest,
+    ctx: StaffContext = Depends(get_staff_context),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        await staff_service.archive_form_requests(db, ctx, payload.request_ids)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+    await db.commit()
+    return {"message": "Form request archived"}
 
 
 # ── Communications ───────────────────────────────────────────────────────────

@@ -177,6 +177,7 @@ class FormTemplate(Base):
     page_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     uploaded_file_url: Mapped[str | None] = mapped_column(String, nullable=True)
     digitize_notes: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

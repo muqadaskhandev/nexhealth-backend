@@ -332,10 +332,17 @@ def _validate_form_fields(data: FormTemplateCreate | FormTemplateUpdate) -> None
                 raise ValueError(f"Field '{field.label}' references a condition field that doesn't exist")
 
 
-async def list_form_templates(db: AsyncSession, ctx: StaffContext) -> list[FormTemplate]:
+async def list_form_templates(
+    db: AsyncSession, ctx: StaffContext, *, archived: bool = False
+) -> list[FormTemplate]:
+    archived_filter = FormTemplate.archived_at.isnot(None) if archived else FormTemplate.archived_at.is_(None)
     result = await db.execute(
         select(FormTemplate)
-        .where(FormTemplate.practice_id == ctx.practice_id, FormTemplate.location_id == ctx.location_id)
+        .where(
+            FormTemplate.practice_id == ctx.practice_id,
+            FormTemplate.location_id == ctx.location_id,
+            archived_filter,
+        )
         .order_by(FormTemplate.name)
     )
     return list(result.scalars().all())
@@ -478,6 +485,18 @@ async def copy_form_templates(
             copied += 1
     await db.flush()
     return copied
+
+
+async def archive_form_template(db: AsyncSession, template: FormTemplate) -> FormTemplate:
+    template.archived_at = _now()
+    await db.flush()
+    return template
+
+
+async def unarchive_form_template(db: AsyncSession, template: FormTemplate) -> FormTemplate:
+    template.archived_at = None
+    await db.flush()
+    return template
 
 
 async def list_form_submissions(

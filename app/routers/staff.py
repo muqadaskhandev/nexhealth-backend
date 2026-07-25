@@ -253,9 +253,11 @@ async def add_waitlist(
 # ── Forms ────────────────────────────────────────────────────────────────────
 @router.get("/api/forms/templates", response_model=list[FormTemplateOut])
 async def form_templates(
-    ctx: StaffContext = Depends(get_staff_context), db: AsyncSession = Depends(get_db)
+    archived: bool = Query(default=False),
+    ctx: StaffContext = Depends(get_staff_context),
+    db: AsyncSession = Depends(get_db),
 ):
-    rows = await staff_service.list_form_templates(db, ctx)
+    rows = await staff_service.list_form_templates(db, ctx, archived=archived)
     return [FormTemplateOut.model_validate(t) for t in rows]
 
 
@@ -338,6 +340,36 @@ async def duplicate_form_template(
     copy = await staff_service.duplicate_form_template(db, ctx, tpl)
     await db.commit()
     return FormTemplateOut.model_validate(copy)
+
+
+@router.post("/api/forms/templates/{template_id}/archive", response_model=FormTemplateOut)
+async def archive_form_template(
+    template_id: uuid.UUID,
+    _: User = Depends(require_admin),
+    ctx: StaffContext = Depends(get_staff_context),
+    db: AsyncSession = Depends(get_db),
+):
+    tpl = await staff_service.get_form_template(db, ctx, template_id)
+    if tpl is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Form template not found")
+    tpl = await staff_service.archive_form_template(db, tpl)
+    await db.commit()
+    return FormTemplateOut.model_validate(tpl)
+
+
+@router.post("/api/forms/templates/{template_id}/unarchive", response_model=FormTemplateOut)
+async def unarchive_form_template(
+    template_id: uuid.UUID,
+    _: User = Depends(require_admin),
+    ctx: StaffContext = Depends(get_staff_context),
+    db: AsyncSession = Depends(get_db),
+):
+    tpl = await staff_service.get_form_template(db, ctx, template_id)
+    if tpl is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Form template not found")
+    tpl = await staff_service.unarchive_form_template(db, tpl)
+    await db.commit()
+    return FormTemplateOut.model_validate(tpl)
 
 
 @router.get("/api/forms/submissions", response_model=list[FormSubmissionOut])

@@ -168,6 +168,7 @@ class FormTemplateOut(BaseModel):
     page_count: int
     uploaded_file_url: str | None
     digitize_notes: str
+    archived_at: datetime | None
     created_at: datetime
 
 

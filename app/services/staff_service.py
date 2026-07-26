@@ -505,6 +505,15 @@ async def move_medical_alert(db: AsyncSession, ctx: StaffContext, alert_id: uuid
     await db.flush()
 
 
+def _is_quoted_alert_label(label: str) -> bool:
+    """Alerts phrased as a quoted question (e.g. "Are you allergic to peanuts?") are
+    internal/PDF-only artifacts in some EHRs (Open Dental) — they never become a real
+    patient-facing prompt, matching "NexHealth no longer creates long-form questions
+    from alerts that have quotation marks around them."."""
+    stripped = label.strip()
+    return len(stripped) >= 2 and stripped.startswith('"') and stripped.endswith('"')
+
+
 async def get_medical_alert_catalog(db: AsyncSession, practice_id: uuid.UUID, location_id: uuid.UUID) -> dict:
     await _ensure_medical_alerts_seeded(db, practice_id, location_id)
     result = await db.execute(
@@ -518,6 +527,8 @@ async def get_medical_alert_catalog(db: AsyncSession, practice_id: uuid.UUID, lo
     )
     catalog: dict[str, list[dict]] = {cat: [] for cat in MEDICAL_ALERT_CATEGORIES}
     for a in result.scalars().all():
+        if _is_quoted_alert_label(a.label):
+            continue
         catalog.setdefault(a.category, []).append({"id": str(a.id), "label": a.label})
     return catalog
 

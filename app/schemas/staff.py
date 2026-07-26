@@ -152,18 +152,21 @@ class MedicalAlertOut(BaseModel):
     active: bool
     flash: bool
     sort_order: int
+    snomed_code: str | None = None
 
 
 class MedicalAlertCreate(BaseModel):
     category: str
     label: str = Field(min_length=1, max_length=200)
     flash: bool = False
+    snomed_code: str | None = Field(default=None, max_length=20)
 
 
 class MedicalAlertUpdate(BaseModel):
     label: str | None = None
     active: bool | None = None
     flash: bool | None = None
+    snomed_code: str | None = None
 
 
 class MoveMedicalAlertRequest(BaseModel):

@@ -444,6 +444,7 @@ async def create_medical_alert(db: AsyncSession, ctx: StaffContext, data: Medica
         label=data.label.strip(),
         flash=data.flash,
         sort_order=next_order,
+        snomed_code=(data.snomed_code.strip() or None) if data.snomed_code is not None else None,
     )
     db.add(alert)
     await db.flush()
@@ -464,6 +465,8 @@ async def update_medical_alert(
         alert.active = data.active
     if data.flash is not None:
         alert.flash = data.flash
+    if data.snomed_code is not None:
+        alert.snomed_code = data.snomed_code.strip() or None
     await db.flush()
     return alert
 

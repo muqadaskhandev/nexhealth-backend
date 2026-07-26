@@ -537,6 +537,50 @@ def form_has_medical_alerts(template: FormTemplate) -> bool:
     return any(f.get("type") in ("medical_alerts_dropdown", "medical_alerts_radio") for f in template.fields)
 
 
+async def seed_default_medical_history_form(
+    db: AsyncSession, practice_id: uuid.UUID, location_id: uuid.UUID
+) -> None:
+    """New locations get a Medical History form out of the box — "the Medical History
+    form is automatically generated when the Synchronizer is installed" (matches this
+    app's equivalent moment: when a new location is created)."""
+    result = await db.execute(
+        select(func.count()).select_from(FormTemplate).where(
+            FormTemplate.practice_id == practice_id,
+            FormTemplate.location_id == location_id,
+        )
+    )
+    if result.scalar_one() > 0:
+        return
+    db.add(
+        FormTemplate(
+            practice_id=practice_id,
+            location_id=location_id,
+            name="Medical History",
+            form_type="Medical",
+            source="build",
+            status="active",
+            display_type="wizard",
+            fields=[
+                {
+                    "id": "medical-alerts",
+                    "type": "medical_alerts_dropdown",
+                    "label": "Medical History",
+                    "required": True,
+                    "options": [],
+                    "page": 1,
+                    "min_length": None,
+                    "max_length": None,
+                    "conditional_field_id": None,
+                    "conditional_value": "",
+                }
+            ],
+            page_count=1,
+            is_default=True,
+        )
+    )
+    await db.flush()
+
+
 async def list_form_templates(
     db: AsyncSession, ctx: StaffContext, *, archived: bool = False
 ) -> list[FormTemplate]:

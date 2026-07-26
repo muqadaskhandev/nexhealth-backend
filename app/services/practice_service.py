@@ -80,6 +80,10 @@ async def create_practice(
     )
     db.add(location)
     await db.flush()
+
+    from app.services import staff_service
+
+    await staff_service.seed_default_medical_history_form(db, practice.id, location.id)
     return practice, location
 
 
@@ -144,6 +148,10 @@ async def create_location_for_practice(
     )
     db.add(location)
     await db.flush()
+
+    from app.services import staff_service
+
+    await staff_service.seed_default_medical_history_form(db, practice.id, location.id)
     return location
 
 

@@ -28,6 +28,7 @@ from app.models.staff import (
     Message,
     MessageChannel,
     MessageThread,
+    MedicalAlert,
     Patient,
     PatientActivity,
     PaymentLink,
@@ -43,6 +44,8 @@ from app.schemas.staff import (
     FormPacketUpdate,
     FormTemplateCreate,
     FormTemplateUpdate,
+    MedicalAlertCreate,
+    MedicalAlertUpdate,
     PatientCreate,
     PatientUpdate,
     PaymentLinkCreate,
@@ -58,7 +61,10 @@ FORM_FIELD_TYPES = {
     "date", "date_entry", "address", "file", "signature",
     "insurance", "preferred_language", "payment",
     "content", "location_logo",
+    "medical_alerts_dropdown", "medical_alerts_radio",
 }
+
+MEDICAL_ALERT_CATEGORIES = ("condition", "allergy", "medication")
 
 RULE_PATIENT_STATUSES = {"any", "new", "existing"}
 
@@ -383,6 +389,89 @@ def _validate_automation_rule(data: FormTemplateCreate | FormTemplateUpdate) -> 
         raise ValueError(f"Unknown patient status rule: {data.rule_patient_status}")
     if data.rule_min_age is not None and data.rule_max_age is not None and data.rule_min_age > data.rule_max_age:
         raise ValueError("Minimum age can't be greater than maximum age")
+
+
+# ── Medical alerts (Integrated Medical History forms) ───────────────────────
+_STARTER_MEDICAL_ALERTS = {
+    "condition": ["Anemia", "Artificial Joints", "Diabetes", "Head Injuries", "Heart Disease", "High Blood Pressure", "Jaundice", "Kidney Disease"],
+    "allergy": ["Penicillin", "Latex", "Aspirin", "Sulfa Drugs", "Local Anesthetics"],
+    "medication": ["Aspirin", "Ibuprofen", "Blood Thinners", "Insulin", "Antibiotics"],
+}
+
+
+async def _ensure_medical_alerts_seeded(db: AsyncSession, practice_id: uuid.UUID, location_id: uuid.UUID) -> None:
+    result = await db.execute(
+        select(func.count()).select_from(MedicalAlert).where(
+            MedicalAlert.practice_id == practice_id,
+            MedicalAlert.location_id == location_id,
+        )
+    )
+    if result.scalar_one() > 0:
+        return
+    for category, labels in _STARTER_MEDICAL_ALERTS.items():
+        for label in labels:
+            db.add(MedicalAlert(practice_id=practice_id, location_id=location_id, category=category, label=label))
+    await db.flush()
+
+
+async def list_medical_alerts(db: AsyncSession, ctx: StaffContext) -> list[MedicalAlert]:
+    await _ensure_medical_alerts_seeded(db, ctx.practice_id, ctx.location_id)
+    result = await db.execute(
+        select(MedicalAlert)
+        .where(MedicalAlert.practice_id == ctx.practice_id, MedicalAlert.location_id == ctx.location_id)
+        .order_by(MedicalAlert.category, MedicalAlert.label)
+    )
+    return list(result.scalars().all())
+
+
+async def create_medical_alert(db: AsyncSession, ctx: StaffContext, data: MedicalAlertCreate) -> MedicalAlert:
+    if data.category not in MEDICAL_ALERT_CATEGORIES:
+        raise ValueError(f"Unknown category: {data.category}")
+    if not data.label.strip():
+        raise ValueError("Label is required")
+    alert = MedicalAlert(
+        practice_id=ctx.practice_id, location_id=ctx.location_id, category=data.category, label=data.label.strip()
+    )
+    db.add(alert)
+    await db.flush()
+    return alert
+
+
+async def update_medical_alert(
+    db: AsyncSession, ctx: StaffContext, alert_id: uuid.UUID, data: MedicalAlertUpdate
+) -> MedicalAlert:
+    alert = await db.get(MedicalAlert, alert_id)
+    if alert is None or alert.practice_id != ctx.practice_id or alert.location_id != ctx.location_id:
+        raise ValueError("Medical alert not found")
+    if data.label is not None:
+        if not data.label.strip():
+            raise ValueError("Label is required")
+        alert.label = data.label.strip()
+    if data.active is not None:
+        alert.active = data.active
+    await db.flush()
+    return alert
+
+
+async def get_medical_alert_catalog(db: AsyncSession, practice_id: uuid.UUID, location_id: uuid.UUID) -> dict:
+    await _ensure_medical_alerts_seeded(db, practice_id, location_id)
+    result = await db.execute(
+        select(MedicalAlert)
+        .where(
+            MedicalAlert.practice_id == practice_id,
+            MedicalAlert.location_id == location_id,
+            MedicalAlert.active.is_(True),
+        )
+        .order_by(MedicalAlert.label)
+    )
+    catalog: dict[str, list[dict]] = {cat: [] for cat in MEDICAL_ALERT_CATEGORIES}
+    for a in result.scalars().all():
+        catalog.setdefault(a.category, []).append({"id": str(a.id), "label": a.label})
+    return catalog
+
+
+def form_has_medical_alerts(template: FormTemplate) -> bool:
+    return any(f.get("type") in ("medical_alerts_dropdown", "medical_alerts_radio") for f in template.fields)
 
 
 async def list_form_templates(

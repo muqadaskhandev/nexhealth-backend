@@ -160,6 +160,26 @@ class WaitlistEntry(Base):
     )
 
 
+class MedicalAlert(Base):
+    """One entry in a practice location's medical alert catalog (conditions/allergies/medications),
+    the list a Medical History form field reads from — this app's analog of "read directly from
+    your health record system" (no real EHR integration exists in this demo)."""
+
+    __tablename__ = "medical_alerts"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    practice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("practices.id", ondelete="CASCADE"))
+    location_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("locations.id", ondelete="CASCADE"), index=True
+    )
+    category: Mapped[str] = mapped_column(String(20), nullable=False)
+    label: Mapped[str] = mapped_column(String(200), nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
 class FormTemplate(Base):
     __tablename__ = "form_templates"
 

@@ -21,7 +21,13 @@ from app.models.staff import (
     Patient,
     PublicPacketSubmission,
 )
-from app.services.staff_service import FORM_REQUEST_EXPIRY_GRACE_HOURS, _log_activity, _now
+from app.services.staff_service import (
+    FORM_REQUEST_EXPIRY_GRACE_HOURS,
+    _log_activity,
+    _now,
+    form_has_medical_alerts,
+    get_medical_alert_catalog,
+)
 
 _GRACE = timedelta(hours=FORM_REQUEST_EXPIRY_GRACE_HOURS)
 
@@ -107,6 +113,12 @@ async def list_pending_forms(db: AsyncSession, patient: Patient) -> list[dict]:
         completed = req.status == FormRequestStatus.COMPLETED
         if not completed and now > req.expires_at + _GRACE:
             continue
+        medical_alerts = None
+        prefill_answers: dict = {}
+        if form_has_medical_alerts(tpl):
+            medical_alerts = await get_medical_alert_catalog(db, tpl.practice_id, tpl.location_id)
+            if not completed:
+                prefill_answers = await get_prior_medical_history_answers(db, patient.id, tpl.id)
         out.append(
             {
                 "request_id": req.id,
@@ -117,9 +129,25 @@ async def list_pending_forms(db: AsyncSession, patient: Patient) -> list[dict]:
                 "fields": tpl.fields,
                 "completed": completed,
                 "expires_at": req.expires_at,
+                "medical_alerts": medical_alerts,
+                "prefill_answers": prefill_answers,
             }
         )
     return out
+
+
+async def get_prior_medical_history_answers(
+    db: AsyncSession, patient_id: uuid.UUID, template_id: uuid.UUID
+) -> dict:
+    result = await db.execute(
+        select(FormSubmission)
+        .join(FormRequest, FormRequest.id == FormSubmission.form_request_id)
+        .where(FormRequest.patient_id == patient_id, FormRequest.form_template_id == template_id)
+        .order_by(FormSubmission.submitted_at.desc())
+        .limit(1)
+    )
+    sub = result.scalars().first()
+    return sub.answers if sub else {}
 
 
 async def submit_form(
@@ -205,6 +233,9 @@ async def get_packet_forms(db: AsyncSession, packet: FormPacket) -> list[dict]:
         tpl = templates.get(tid)
         if tpl is None:
             continue
+        medical_alerts = None
+        if form_has_medical_alerts(tpl):
+            medical_alerts = await get_medical_alert_catalog(db, tpl.practice_id, tpl.location_id)
         out.append(
             {
                 "template_id": tpl.id,
@@ -212,6 +243,7 @@ async def get_packet_forms(db: AsyncSession, packet: FormPacket) -> list[dict]:
                 "display_type": tpl.display_type,
                 "page_count": tpl.page_count,
                 "fields": tpl.fields,
+                "medical_alerts": medical_alerts,
             }
         )
     return out

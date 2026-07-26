@@ -34,6 +34,11 @@ class PublicFormFieldOut(BaseModel):
     conditional_value: str = ""
 
 
+class MedicalAlertEntryOut(BaseModel):
+    id: str
+    label: str
+
+
 class PublicFormOut(BaseModel):
     request_id: uuid.UUID
     template_id: uuid.UUID
@@ -43,6 +48,8 @@ class PublicFormOut(BaseModel):
     fields: list[PublicFormFieldOut]
     completed: bool
     expires_at: datetime
+    medical_alerts: dict[str, list[MedicalAlertEntryOut]] | None = None
+    prefill_answers: dict[str, Any] = Field(default_factory=dict)
 
 
 class PublicVerifyOut(BaseModel):
@@ -72,6 +79,7 @@ class PublicPacketFormOut(BaseModel):
     display_type: str
     page_count: int
     fields: list[PublicFormFieldOut]
+    medical_alerts: dict[str, list[MedicalAlertEntryOut]] | None = None
 
 
 class PublicPacketInfoOut(BaseModel):

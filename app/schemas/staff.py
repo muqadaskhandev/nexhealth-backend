@@ -143,6 +143,25 @@ class FormFieldSchema(BaseModel):
     conditional_value: str = ""
 
 
+class MedicalAlertOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    category: str
+    label: str
+    active: bool
+
+
+class MedicalAlertCreate(BaseModel):
+    category: str
+    label: str = Field(min_length=1, max_length=200)
+
+
+class MedicalAlertUpdate(BaseModel):
+    label: str | None = None
+    active: bool | None = None
+
+
 class FormTemplateCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     form_type: str = ""

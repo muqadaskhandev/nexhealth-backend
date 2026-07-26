@@ -27,6 +27,9 @@ from app.schemas.staff import (
     FormTemplateCreate,
     FormTemplateOut,
     FormTemplateUpdate,
+    MedicalAlertCreate,
+    MedicalAlertOut,
+    MedicalAlertUpdate,
     MessageOut,
     PatientCreate,
     PatientOut,
@@ -258,6 +261,46 @@ async def add_waitlist(
         patient_name=f"{patient.first_name} {patient.last_name}" if patient else "",
         created_at=entry.created_at,
     )
+
+
+# ── Medical alerts ───────────────────────────────────────────────────────────
+@router.get("/api/medical-alerts", response_model=list[MedicalAlertOut])
+async def medical_alerts(
+    ctx: StaffContext = Depends(get_staff_context), db: AsyncSession = Depends(get_db)
+):
+    rows = await staff_service.list_medical_alerts(db, ctx)
+    return [MedicalAlertOut.model_validate(a) for a in rows]
+
+
+@router.post("/api/medical-alerts", response_model=MedicalAlertOut, status_code=status.HTTP_201_CREATED)
+async def create_medical_alert(
+    payload: MedicalAlertCreate,
+    _: User = Depends(require_admin),
+    ctx: StaffContext = Depends(get_staff_context),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        alert = await staff_service.create_medical_alert(db, ctx, payload)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+    await db.commit()
+    return MedicalAlertOut.model_validate(alert)
+
+
+@router.patch("/api/medical-alerts/{alert_id}", response_model=MedicalAlertOut)
+async def update_medical_alert(
+    alert_id: uuid.UUID,
+    payload: MedicalAlertUpdate,
+    _: User = Depends(require_admin),
+    ctx: StaffContext = Depends(get_staff_context),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        alert = await staff_service.update_medical_alert(db, ctx, alert_id, payload)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+    await db.commit()
+    return MedicalAlertOut.model_validate(alert)
 
 
 # ── Forms ────────────────────────────────────────────────────────────────────

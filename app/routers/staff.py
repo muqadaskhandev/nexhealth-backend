@@ -65,6 +65,11 @@ def _patient_out(p) -> PatientOut:
     )
 
 
+async def _form_template_out(db: AsyncSession, tpl) -> FormTemplateOut:
+    locked = await staff_service.is_form_template_locked(db, tpl)
+    return FormTemplateOut.model_validate(tpl).model_copy(update={"is_locked": locked})
+
+
 def _appt_out(appt, patient) -> AppointmentOut:
     return AppointmentOut(
         id=appt.id,
@@ -342,7 +347,7 @@ async def form_templates(
     db: AsyncSession = Depends(get_db),
 ):
     rows = await staff_service.list_form_templates(db, ctx, archived=archived)
-    return [FormTemplateOut.model_validate(t) for t in rows]
+    return [await _form_template_out(db, t) for t in rows]
 
 
 @router.get("/api/forms/templates/frequent", response_model=list[FormTemplateOut])
@@ -350,7 +355,7 @@ async def frequent_form_templates(
     ctx: StaffContext = Depends(get_staff_context), db: AsyncSession = Depends(get_db)
 ):
     rows = await staff_service.list_frequent_form_templates(db, ctx)
-    return [FormTemplateOut.model_validate(t) for t in rows]
+    return [await _form_template_out(db, t) for t in rows]
 
 
 @router.post("/api/forms/templates", response_model=FormTemplateOut, status_code=status.HTTP_201_CREATED)
@@ -365,7 +370,7 @@ async def create_form_template(
     except ValueError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
     await db.commit()
-    return FormTemplateOut.model_validate(tpl)
+    return await _form_template_out(db, tpl)
 
 
 @router.patch("/api/forms/templates/{template_id}", response_model=FormTemplateOut)
@@ -384,7 +389,7 @@ async def update_form_template(
     except ValueError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
     await db.commit()
-    return FormTemplateOut.model_validate(tpl)
+    return await _form_template_out(db, tpl)
 
 
 @router.post("/api/forms/templates/digitize", response_model=FormTemplateOut, status_code=status.HTTP_201_CREATED)
@@ -401,7 +406,7 @@ async def digitize_form_template(
     except ValueError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
     await db.commit()
-    return FormTemplateOut.model_validate(tpl)
+    return await _form_template_out(db, tpl)
 
 
 @router.post("/api/forms/templates/copy", status_code=status.HTTP_200_OK)
@@ -431,7 +436,7 @@ async def duplicate_form_template(
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Form template not found")
     copy = await staff_service.duplicate_form_template(db, ctx, tpl)
     await db.commit()
-    return FormTemplateOut.model_validate(copy)
+    return await _form_template_out(db, copy)
 
 
 @router.post("/api/forms/templates/{template_id}/archive", response_model=FormTemplateOut)
@@ -446,7 +451,7 @@ async def archive_form_template(
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Form template not found")
     tpl = await staff_service.archive_form_template(db, tpl)
     await db.commit()
-    return FormTemplateOut.model_validate(tpl)
+    return await _form_template_out(db, tpl)
 
 
 @router.post("/api/forms/templates/{template_id}/unarchive", response_model=FormTemplateOut)
@@ -461,7 +466,25 @@ async def unarchive_form_template(
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Form template not found")
     tpl = await staff_service.unarchive_form_template(db, tpl)
     await db.commit()
-    return FormTemplateOut.model_validate(tpl)
+    return await _form_template_out(db, tpl)
+
+
+@router.post("/api/forms/templates/{template_id}/set-default", response_model=FormTemplateOut)
+async def set_default_form_template(
+    template_id: uuid.UUID,
+    _: User = Depends(require_admin),
+    ctx: StaffContext = Depends(get_staff_context),
+    db: AsyncSession = Depends(get_db),
+):
+    tpl = await staff_service.get_form_template(db, ctx, template_id)
+    if tpl is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Form template not found")
+    try:
+        await staff_service.set_default_form_template(db, ctx, tpl)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+    await db.commit()
+    return await _form_template_out(db, tpl)
 
 
 @router.get("/api/forms/packets", response_model=list[FormPacketOut])

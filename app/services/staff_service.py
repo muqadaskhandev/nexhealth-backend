@@ -576,9 +576,31 @@ async def create_form_template(db: AsyncSession, ctx: StaffContext, data: FormTe
     return tpl
 
 
+async def has_form_submissions(db: AsyncSession, template_id: uuid.UUID) -> bool:
+    result = await db.execute(
+        select(func.count())
+        .select_from(FormSubmission)
+        .join(FormRequest, FormRequest.id == FormSubmission.form_request_id)
+        .where(FormRequest.form_template_id == template_id)
+    )
+    return result.scalar_one() > 0
+
+
+async def is_form_template_locked(db: AsyncSession, template: FormTemplate) -> bool:
+    """Medical History forms become immutable once a real patient has submitted one —
+    mirrors Eaglesoft's own "can't edit a filled-out Medical Form" rule."""
+    if not form_has_medical_alerts(template):
+        return False
+    return await has_form_submissions(db, template.id)
+
+
 async def update_form_template(
     db: AsyncSession, template: FormTemplate, data: FormTemplateUpdate
 ) -> FormTemplate:
+    if await is_form_template_locked(db, template):
+        raise ValueError(
+            "This Medical History form has real patient submissions and can't be edited — duplicate it to make changes."
+        )
     if not data.name.strip():
         raise ValueError("Name is required")
     _validate_form_fields(data)
@@ -632,10 +654,32 @@ async def duplicate_form_template(db: AsyncSession, ctx: StaffContext, template:
         page_count=template.page_count,
         uploaded_file_url=template.uploaded_file_url,
         digitize_notes=template.digitize_notes,
+        send_automatically=template.send_automatically,
+        rule_patient_status=template.rule_patient_status,
+        rule_frequency_months=template.rule_frequency_months,
+        rule_min_age=template.rule_min_age,
+        rule_max_age=template.rule_max_age,
+        rule_appointment_type_ids=template.rule_appointment_type_ids,
     )
     db.add(copy)
     await db.flush()
     return copy
+
+
+async def set_default_form_template(db: AsyncSession, ctx: StaffContext, template: FormTemplate) -> None:
+    if not form_has_medical_alerts(template):
+        raise ValueError("Only Medical History forms can be marked as default")
+    result = await db.execute(
+        select(FormTemplate).where(
+            FormTemplate.practice_id == ctx.practice_id,
+            FormTemplate.location_id == ctx.location_id,
+            FormTemplate.is_default.is_(True),
+        )
+    )
+    for other in result.scalars().all():
+        other.is_default = False
+    template.is_default = True
+    await db.flush()
 
 
 async def copy_form_templates(

@@ -211,6 +211,8 @@ class FormTemplateOut(BaseModel):
     rule_min_age: int | None
     rule_max_age: int | None
     rule_appointment_type_ids: list[uuid.UUID]
+    is_default: bool
+    is_locked: bool = False
     created_at: datetime
 
 

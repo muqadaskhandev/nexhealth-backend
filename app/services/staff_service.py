@@ -409,8 +409,8 @@ async def _ensure_medical_alerts_seeded(db: AsyncSession, practice_id: uuid.UUID
     if result.scalar_one() > 0:
         return
     for category, labels in _STARTER_MEDICAL_ALERTS.items():
-        for label in labels:
-            db.add(MedicalAlert(practice_id=practice_id, location_id=location_id, category=category, label=label))
+        for i, label in enumerate(labels):
+            db.add(MedicalAlert(practice_id=practice_id, location_id=location_id, category=category, label=label, sort_order=i))
     await db.flush()
 
 
@@ -419,7 +419,7 @@ async def list_medical_alerts(db: AsyncSession, ctx: StaffContext) -> list[Medic
     result = await db.execute(
         select(MedicalAlert)
         .where(MedicalAlert.practice_id == ctx.practice_id, MedicalAlert.location_id == ctx.location_id)
-        .order_by(MedicalAlert.category, MedicalAlert.label)
+        .order_by(MedicalAlert.category, MedicalAlert.sort_order)
     )
     return list(result.scalars().all())
 
@@ -429,8 +429,21 @@ async def create_medical_alert(db: AsyncSession, ctx: StaffContext, data: Medica
         raise ValueError(f"Unknown category: {data.category}")
     if not data.label.strip():
         raise ValueError("Label is required")
+    result = await db.execute(
+        select(func.max(MedicalAlert.sort_order)).where(
+            MedicalAlert.practice_id == ctx.practice_id,
+            MedicalAlert.location_id == ctx.location_id,
+            MedicalAlert.category == data.category,
+        )
+    )
+    next_order = (result.scalar_one() or 0) + 1
     alert = MedicalAlert(
-        practice_id=ctx.practice_id, location_id=ctx.location_id, category=data.category, label=data.label.strip()
+        practice_id=ctx.practice_id,
+        location_id=ctx.location_id,
+        category=data.category,
+        label=data.label.strip(),
+        flash=data.flash,
+        sort_order=next_order,
     )
     db.add(alert)
     await db.flush()
@@ -449,8 +462,44 @@ async def update_medical_alert(
         alert.label = data.label.strip()
     if data.active is not None:
         alert.active = data.active
+    if data.flash is not None:
+        alert.flash = data.flash
     await db.flush()
     return alert
+
+
+async def delete_medical_alert(db: AsyncSession, ctx: StaffContext, alert_id: uuid.UUID) -> None:
+    alert = await db.get(MedicalAlert, alert_id)
+    if alert is None or alert.practice_id != ctx.practice_id or alert.location_id != ctx.location_id:
+        raise ValueError("Medical alert not found")
+    await db.delete(alert)
+    await db.flush()
+
+
+async def move_medical_alert(db: AsyncSession, ctx: StaffContext, alert_id: uuid.UUID, direction: str) -> None:
+    if direction not in ("up", "down"):
+        raise ValueError("Direction must be 'up' or 'down'")
+    alert = await db.get(MedicalAlert, alert_id)
+    if alert is None or alert.practice_id != ctx.practice_id or alert.location_id != ctx.location_id:
+        raise ValueError("Medical alert not found")
+
+    result = await db.execute(
+        select(MedicalAlert)
+        .where(
+            MedicalAlert.practice_id == ctx.practice_id,
+            MedicalAlert.location_id == ctx.location_id,
+            MedicalAlert.category == alert.category,
+        )
+        .order_by(MedicalAlert.sort_order)
+    )
+    siblings = result.scalars().all()
+    idx = next(i for i, a in enumerate(siblings) if a.id == alert.id)
+    swap_idx = idx - 1 if direction == "up" else idx + 1
+    if swap_idx < 0 or swap_idx >= len(siblings):
+        return
+    other = siblings[swap_idx]
+    alert.sort_order, other.sort_order = other.sort_order, alert.sort_order
+    await db.flush()
 
 
 async def get_medical_alert_catalog(db: AsyncSession, practice_id: uuid.UUID, location_id: uuid.UUID) -> dict:
@@ -462,7 +511,7 @@ async def get_medical_alert_catalog(db: AsyncSession, practice_id: uuid.UUID, lo
             MedicalAlert.location_id == location_id,
             MedicalAlert.active.is_(True),
         )
-        .order_by(MedicalAlert.label)
+        .order_by(MedicalAlert.category, MedicalAlert.sort_order)
     )
     catalog: dict[str, list[dict]] = {cat: [] for cat in MEDICAL_ALERT_CATEGORIES}
     for a in result.scalars().all():

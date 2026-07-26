@@ -150,16 +150,24 @@ class MedicalAlertOut(BaseModel):
     category: str
     label: str
     active: bool
+    flash: bool
+    sort_order: int
 
 
 class MedicalAlertCreate(BaseModel):
     category: str
     label: str = Field(min_length=1, max_length=200)
+    flash: bool = False
 
 
 class MedicalAlertUpdate(BaseModel):
     label: str | None = None
     active: bool | None = None
+    flash: bool | None = None
+
+
+class MoveMedicalAlertRequest(BaseModel):
+    direction: str = Field(pattern="^(up|down)$")
 
 
 class FormTemplateCreate(BaseModel):

@@ -31,6 +31,7 @@ from app.schemas.staff import (
     MedicalAlertOut,
     MedicalAlertUpdate,
     MessageOut,
+    MoveMedicalAlertRequest,
     PatientCreate,
     PatientOut,
     PatientUpdate,
@@ -301,6 +302,36 @@ async def update_medical_alert(
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
     await db.commit()
     return MedicalAlertOut.model_validate(alert)
+
+
+@router.delete("/api/medical-alerts/{alert_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_medical_alert(
+    alert_id: uuid.UUID,
+    _: User = Depends(require_admin),
+    ctx: StaffContext = Depends(get_staff_context),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        await staff_service.delete_medical_alert(db, ctx, alert_id)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+    await db.commit()
+
+
+@router.post("/api/medical-alerts/{alert_id}/move")
+async def move_medical_alert(
+    alert_id: uuid.UUID,
+    payload: MoveMedicalAlertRequest,
+    _: User = Depends(require_admin),
+    ctx: StaffContext = Depends(get_staff_context),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        await staff_service.move_medical_alert(db, ctx, alert_id, payload.direction)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+    await db.commit()
+    return {"message": "Moved"}
 
 
 # ── Forms ────────────────────────────────────────────────────────────────────

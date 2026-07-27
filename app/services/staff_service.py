@@ -60,7 +60,7 @@ FORM_FIELD_TYPES = {
     "checkbox", "select_boxes", "dropdown", "radio",
     "date", "date_entry", "address", "file", "signature",
     "insurance", "preferred_language", "payment",
-    "content", "location_logo",
+    "content", "location_logo", "columns", "panel",
     "medical_alerts_dropdown", "medical_alerts_radio",
 }
 
@@ -348,6 +348,7 @@ async def update_appointment(
     appt = result.scalar_one_or_none()
     if appt is None:
         return None
+    prior_status = appt.status
     payload = data.model_dump(exclude_unset=True)
     if "status" in payload:
         appt.status = AppointmentStatus(payload["status"])
@@ -361,6 +362,11 @@ async def update_appointment(
     for k, v in payload.items():
         setattr(appt, k, v)
     await db.flush()
+    if (
+        prior_status != AppointmentStatus.CONFIRMED
+        and appt.status == AppointmentStatus.CONFIRMED
+    ):
+        await notify_automatic_forms_on_confirmation(db, ctx, appt)
     return appt
 
 
@@ -681,6 +687,7 @@ async def create_form_template(db: AsyncSession, ctx: StaffContext, data: FormTe
         rule_min_age=data.rule_min_age,
         rule_max_age=data.rule_max_age,
         rule_appointment_type_ids=[str(i) for i in data.rule_appointment_type_ids],
+        rule_procedure_codes=[c.strip() for c in data.rule_procedure_codes if c.strip()],
     )
     db.add(tpl)
     await db.flush()
@@ -727,6 +734,7 @@ async def update_form_template(
     template.rule_min_age = data.rule_min_age
     template.rule_max_age = data.rule_max_age
     template.rule_appointment_type_ids = [str(i) for i in data.rule_appointment_type_ids]
+    template.rule_procedure_codes = [c.strip() for c in data.rule_procedure_codes if c.strip()]
     await db.flush()
     return template
 
@@ -771,6 +779,7 @@ async def duplicate_form_template(db: AsyncSession, ctx: StaffContext, template:
         rule_min_age=template.rule_min_age,
         rule_max_age=template.rule_max_age,
         rule_appointment_type_ids=template.rule_appointment_type_ids,
+        rule_procedure_codes=template.rule_procedure_codes,
     )
     db.add(copy)
     await db.flush()
@@ -794,25 +803,53 @@ async def set_default_form_template(db: AsyncSession, ctx: StaffContext, templat
 
 
 async def copy_form_templates(
-    db: AsyncSession, ctx: StaffContext, template_ids: list[uuid.UUID], location_ids: list[uuid.UUID]
-) -> int:
-    result = await db.execute(
-        select(FormTemplate).where(
-            FormTemplate.id.in_(template_ids),
-            FormTemplate.practice_id == ctx.practice_id,
-            FormTemplate.location_id == ctx.location_id,
+    db: AsyncSession,
+    ctx: StaffContext,
+    template_ids: list[uuid.UUID],
+    packet_ids: list[uuid.UUID],
+    location_ids: list[uuid.UUID],
+) -> dict[str, int]:
+    if not template_ids and not packet_ids:
+        raise ValueError("Select at least one form or packet to copy")
+
+    packets: list[FormPacket] = []
+    if packet_ids:
+        pkt_result = await db.execute(
+            select(FormPacket).where(
+                FormPacket.id.in_(packet_ids),
+                FormPacket.practice_id == ctx.practice_id,
+                FormPacket.location_id == ctx.location_id,
+            )
         )
-    )
-    sources = result.scalars().all()
-    if len(sources) != len(set(template_ids)):
-        raise ValueError("Some forms could not be found in your current location")
+        packets = list(pkt_result.scalars().all())
+        if len(packets) != len(set(packet_ids)):
+            raise ValueError("Some packets could not be found in your current location")
+
+    all_template_ids = set(template_ids)
+    for pkt in packets:
+        all_template_ids.update(uuid.UUID(str(tid)) for tid in pkt.form_template_ids)
+
+    sources: list[FormTemplate] = []
+    if all_template_ids:
+        result = await db.execute(
+            select(FormTemplate).where(
+                FormTemplate.id.in_(all_template_ids),
+                FormTemplate.practice_id == ctx.practice_id,
+                FormTemplate.location_id == ctx.location_id,
+            )
+        )
+        sources = list(result.scalars().all())
+        if len(sources) != len(all_template_ids):
+            raise ValueError("Some forms could not be found in your current location")
 
     target_locations = [lid for lid in dict.fromkeys(location_ids) if lid != ctx.location_id]
     if not target_locations:
         raise ValueError("Select at least one other location to copy to")
 
-    copied = 0
+    forms_copied = 0
+    packets_copied = 0
     for loc_id in target_locations:
+        id_map: dict[uuid.UUID, uuid.UUID] = {}
         for src in sources:
             existing_result = await db.execute(
                 select(FormTemplate).where(
@@ -831,8 +868,16 @@ async def copy_form_templates(
                 existing.page_count = src.page_count
                 existing.uploaded_file_url = src.uploaded_file_url
                 existing.digitize_notes = src.digitize_notes
+                existing.send_automatically = src.send_automatically
+                existing.rule_patient_status = src.rule_patient_status
+                existing.rule_frequency_months = src.rule_frequency_months
+                existing.rule_min_age = src.rule_min_age
+                existing.rule_max_age = src.rule_max_age
+                existing.rule_appointment_type_ids = src.rule_appointment_type_ids
+                existing.rule_procedure_codes = src.rule_procedure_codes
+                id_map[src.id] = existing.id
             else:
-                db.add(FormTemplate(
+                new_tpl = FormTemplate(
                     practice_id=ctx.practice_id,
                     location_id=loc_id,
                     name=src.name,
@@ -844,10 +889,44 @@ async def copy_form_templates(
                     page_count=src.page_count,
                     uploaded_file_url=src.uploaded_file_url,
                     digitize_notes=src.digitize_notes,
-                ))
-            copied += 1
+                    send_automatically=src.send_automatically,
+                    rule_patient_status=src.rule_patient_status,
+                    rule_frequency_months=src.rule_frequency_months,
+                    rule_min_age=src.rule_min_age,
+                    rule_max_age=src.rule_max_age,
+                    rule_appointment_type_ids=src.rule_appointment_type_ids,
+                    rule_procedure_codes=src.rule_procedure_codes,
+                )
+                db.add(new_tpl)
+                await db.flush()
+                id_map[src.id] = new_tpl.id
+            forms_copied += 1
+
+        for pkt in packets:
+            remapped = [str(id_map[uuid.UUID(str(tid))]) for tid in pkt.form_template_ids]
+            existing_pkt_result = await db.execute(
+                select(FormPacket).where(
+                    FormPacket.practice_id == ctx.practice_id,
+                    FormPacket.location_id == loc_id,
+                    FormPacket.name == pkt.name,
+                )
+            )
+            existing_pkt = existing_pkt_result.scalar_one_or_none()
+            if existing_pkt:
+                existing_pkt.form_template_ids = remapped
+            else:
+                db.add(
+                    FormPacket(
+                        practice_id=ctx.practice_id,
+                        location_id=loc_id,
+                        name=pkt.name,
+                        form_template_ids=remapped,
+                    )
+                )
+            packets_copied += 1
+
     await db.flush()
-    return copied
+    return {"copied": forms_copied + packets_copied, "forms_copied": forms_copied, "packets_copied": packets_copied}
 
 
 async def archive_form_template(db: AsyncSession, template: FormTemplate) -> FormTemplate:
@@ -916,6 +995,18 @@ async def update_form_packet(db: AsyncSession, packet: FormPacket, data: FormPac
     packet.form_template_ids = [str(i) for i in data.form_template_ids]
     await db.flush()
     return packet
+
+
+async def duplicate_form_packet(db: AsyncSession, ctx: StaffContext, packet: FormPacket) -> FormPacket:
+    copy = FormPacket(
+        practice_id=ctx.practice_id,
+        location_id=ctx.location_id,
+        name=f"{packet.name} (copy)",
+        form_template_ids=list(packet.form_template_ids),
+    )
+    db.add(copy)
+    await db.flush()
+    return copy
 
 
 async def delete_form_packet(db: AsyncSession, packet: FormPacket) -> None:
@@ -1121,6 +1212,93 @@ async def send_form(
     return requests
 
 
+def _norm_procedure_code(code: str) -> str:
+    return str(code).strip().upper()
+
+
+async def _patient_is_new(db: AsyncSession, patient_id: uuid.UUID, exclude_appointment_id: uuid.UUID) -> bool:
+    """New patients have never had a completed (checked-in) appointment."""
+    prior_result = await db.execute(
+        select(func.count()).select_from(Appointment).where(
+            Appointment.patient_id == patient_id,
+            Appointment.id != exclude_appointment_id,
+            Appointment.status == AppointmentStatus.CHECKED_IN,
+        )
+    )
+    return prior_result.scalar_one() == 0
+
+
+async def _should_skip_form_frequency(
+    db: AsyncSession, *, patient_id: uuid.UUID, template: FormTemplate, now: datetime
+) -> bool:
+    if template.rule_frequency_months:
+        last_completed_result = await db.execute(
+            select(func.max(FormSubmission.submitted_at))
+            .join(FormRequest, FormRequest.id == FormSubmission.form_request_id)
+            .where(
+                FormRequest.patient_id == patient_id,
+                FormRequest.form_template_id == template.id,
+                FormRequest.status == FormRequestStatus.COMPLETED,
+            )
+        )
+        last_completed = last_completed_result.scalar_one_or_none()
+        if last_completed is not None:
+            return last_completed + timedelta(days=30 * template.rule_frequency_months) > now
+        return False
+
+    ever_sent_result = await db.execute(
+        select(func.count()).select_from(FormRequest).where(
+            FormRequest.patient_id == patient_id,
+            FormRequest.form_template_id == template.id,
+        )
+    )
+    return ever_sent_result.scalar_one() > 0
+
+
+async def notify_automatic_forms_on_confirmation(
+    db: AsyncSession, ctx: StaffContext, appointment: Appointment
+) -> None:
+    """Send form links after a patient confirms their appointment (SMS reminder sequence)."""
+    appt_date = appointment.starts_at.date()
+    result = await db.execute(
+        select(FormRequest, FormTemplate)
+        .join(FormTemplate, FormTemplate.id == FormRequest.form_template_id)
+        .where(
+            FormRequest.patient_id == appointment.patient_id,
+            FormRequest.practice_id == ctx.practice_id,
+            FormRequest.location_id == ctx.location_id,
+            FormRequest.archived_at.is_(None),
+            FormRequest.status != FormRequestStatus.COMPLETED,
+            func.date(FormRequest.expires_at) == appt_date,
+        )
+    )
+    rows = result.all()
+    if not rows:
+        return
+
+    templates = [tpl for _, tpl in rows]
+    expires_at = rows[0][0].expires_at
+    raw_token = await create_form_access_token(
+        db,
+        practice_id=ctx.practice_id,
+        location_id=ctx.location_id,
+        patient_id=appointment.patient_id,
+        expires_at=expires_at,
+    )
+    link = f"{settings.frontend_url}/forms/{raw_token}"
+    names = ", ".join(t.name for t in templates)
+    body = f"Please fill out the following form(s): {names}\n{link}"
+    await send_message(
+        db, ctx, SendMessageRequest(patient_id=appointment.patient_id, body=body, channel="sms")
+    )
+    await _log_activity(
+        db,
+        patient_id=appointment.patient_id,
+        activity_type=ActivityType.FORM,
+        title=f"Form{'s' if len(templates) != 1 else ''} sent automatically — {names}",
+    )
+
+
 async def evaluate_automatic_form_requests(
     db: AsyncSession,
     *,
@@ -1145,14 +1323,20 @@ async def evaluate_automatic_form_requests(
     if patient is None:
         return
 
-    prior_result = await db.execute(
-        select(func.count()).select_from(Appointment).where(
-            Appointment.patient_id == appointment.patient_id,
-            Appointment.id != appointment.id,
-            Appointment.status != AppointmentStatus.CANCELLED,
+    appt_date = appointment.starts_at.date()
+    dup_result = await db.execute(
+        select(func.count()).select_from(FormRequest).where(
+            FormRequest.patient_id == appointment.patient_id,
+            FormRequest.practice_id == practice_id,
+            FormRequest.location_id == location_id,
+            func.date(FormRequest.expires_at) == appt_date,
         )
     )
-    patient_status = "existing" if prior_result.scalar_one() > 0 else "new"
+    if dup_result.scalar_one() > 0:
+        return
+
+    patient_is_new = await _patient_is_new(db, appointment.patient_id, appointment.id)
+    patient_status = "new" if patient_is_new else "existing"
 
     now = _now()
     age_years: int | None = None
@@ -1174,6 +1358,9 @@ async def evaluate_automatic_form_requests(
         )
         matching_type_ids = {str(i) for i in type_result.scalars().all()}
 
+    meta = appointment.meta or {}
+    appt_procedure_codes = {_norm_procedure_code(c) for c in meta.get("procedure_codes", []) if str(c).strip()}
+
     matched: list[FormTemplate] = []
     for tpl in templates:
         if tpl.rule_patient_status != "any" and tpl.rule_patient_status != patient_status:
@@ -1184,34 +1371,23 @@ async def evaluate_automatic_form_requests(
             continue
         if tpl.rule_appointment_type_ids and not matching_type_ids & set(tpl.rule_appointment_type_ids):
             continue
+        if tpl.rule_procedure_codes:
+            rule_codes = {_norm_procedure_code(c) for c in tpl.rule_procedure_codes if str(c).strip()}
+            if not appt_procedure_codes & rule_codes:
+                continue
         matched.append(tpl)
     if not matched:
         return
 
     filtered: list[FormTemplate] = []
     for tpl in matched:
-        last_sent_result = await db.execute(
-            select(func.max(FormRequest.sent_at)).where(
-                FormRequest.patient_id == appointment.patient_id,
-                FormRequest.form_template_id == tpl.id,
-                FormRequest.archived_at.is_(None),
-            )
-        )
-        last_sent = last_sent_result.scalar_one_or_none()
-        if last_sent is not None:
-            if tpl.rule_frequency_months:
-                if last_sent + timedelta(days=30 * tpl.rule_frequency_months) > now:
-                    continue
-            elif last_sent.date() == now.date():
-                continue
+        if await _should_skip_form_frequency(db, patient_id=appointment.patient_id, template=tpl, now=now):
+            continue
         filtered.append(tpl)
     if not filtered:
         return
 
-    location = await db.get(Location, location_id)
-    amount = location.form_expiration_amount if location else 7
-    unit = location.form_expiration_unit if location else "days"
-    expires_at = _compute_expires_at(amount, unit, now)
+    expires_at = appointment.starts_at
 
     for tpl in filtered:
         db.add(
@@ -1226,6 +1402,8 @@ async def evaluate_automatic_form_requests(
     await db.flush()
 
     if ctx is None:
+        return
+    if appointment.status not in (AppointmentStatus.CONFIRMED, AppointmentStatus.CHECKED_IN):
         return
 
     raw_token = await create_form_access_token(
@@ -1247,6 +1425,7 @@ async def evaluate_automatic_form_requests(
 
 
 async def list_form_request_batches(db: AsyncSession, ctx: StaffContext, *, tab: str) -> list[dict]:
+    archived_only = tab == "deleted"
     result = await db.execute(
         select(FormRequest, FormTemplate, Patient)
         .join(FormTemplate, FormTemplate.id == FormRequest.form_template_id)
@@ -1254,7 +1433,7 @@ async def list_form_request_batches(db: AsyncSession, ctx: StaffContext, *, tab:
         .where(
             FormRequest.practice_id == ctx.practice_id,
             FormRequest.location_id == ctx.location_id,
-            FormRequest.archived_at.is_(None),
+            FormRequest.archived_at.isnot(None) if archived_only else FormRequest.archived_at.is_(None),
         )
         .order_by(FormRequest.sent_at.desc())
     )
@@ -1305,7 +1484,7 @@ async def list_form_request_batches(db: AsyncSession, ctx: StaffContext, *, tab:
             status = "expired"
         else:
             status = "active"
-        if tab != "all" and status != tab:
+        if not archived_only and tab != "all" and status != tab:
             continue
 
         if all_completed:

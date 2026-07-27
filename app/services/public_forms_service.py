@@ -47,11 +47,19 @@ async def get_token(db: AsyncSession, raw_token: str) -> FormAccessToken | None:
 async def get_branding(db: AsyncSession, token: FormAccessToken) -> dict:
     practice = await db.get(Practice, token.practice_id)
     location = await db.get(Location, token.location_id)
+    address_parts = []
+    if location:
+        if location.address:
+            address_parts.append(location.address)
+        city_line = ", ".join(p for p in [location.city, location.state, location.zip_code] if p)
+        if city_line:
+            address_parts.append(city_line)
+    full_address = ", ".join(address_parts)
     return {
         "practice_name": practice.name if practice else "",
         "practice_logo_url": practice.logo_url if practice else None,
         "location_name": location.name if location else "",
-        "location_address": ", ".join(p for p in [location.address if location else "", location.city if location else ""] if p),
+        "location_address": full_address,
         "location_phone": location.phone if location else "",
     }
 
@@ -118,7 +126,13 @@ async def list_pending_forms(db: AsyncSession, patient: Patient) -> list[dict]:
         if form_has_medical_alerts(tpl):
             medical_alerts = await get_medical_alert_catalog(db, tpl.practice_id, tpl.location_id)
             if not completed:
-                prefill_answers = await get_prior_medical_history_answers(db, patient.id, tpl.id)
+                prefill_answers = await get_prior_medical_history_answers(
+                    db,
+                    patient.id,
+                    tpl.id,
+                    practice_id=tpl.practice_id,
+                    location_id=tpl.location_id,
+                )
         out.append(
             {
                 "request_id": req.id,
@@ -137,17 +151,49 @@ async def list_pending_forms(db: AsyncSession, patient: Patient) -> list[dict]:
 
 
 async def get_prior_medical_history_answers(
-    db: AsyncSession, patient_id: uuid.UUID, template_id: uuid.UUID
+    db: AsyncSession,
+    patient_id: uuid.UUID,
+    template_id: uuid.UUID,
+    *,
+    practice_id: uuid.UUID,
+    location_id: uuid.UUID,
 ) -> dict:
+    """Pre-fill from the patient's most recent completed Medical History form at this location."""
+    current_tpl = await db.get(FormTemplate, template_id)
+    if current_tpl is None or not form_has_medical_alerts(current_tpl):
+        return {}
+
     result = await db.execute(
-        select(FormSubmission)
+        select(FormSubmission, FormTemplate)
         .join(FormRequest, FormRequest.id == FormSubmission.form_request_id)
-        .where(FormRequest.patient_id == patient_id, FormRequest.form_template_id == template_id)
+        .join(FormTemplate, FormTemplate.id == FormRequest.form_template_id)
+        .where(
+            FormRequest.patient_id == patient_id,
+            FormRequest.practice_id == practice_id,
+            FormRequest.location_id == location_id,
+            FormRequest.status == FormRequestStatus.COMPLETED,
+        )
         .order_by(FormSubmission.submitted_at.desc())
-        .limit(1)
     )
-    sub = result.scalars().first()
-    return sub.answers if sub else {}
+    for sub, prior_tpl in result.all():
+        if not form_has_medical_alerts(prior_tpl):
+            continue
+        prior_answers = sub.answers or {}
+        prior_medical: dict | None = None
+        for prior_field in prior_tpl.fields:
+            if prior_field.get("type") in ("medical_alerts_dropdown", "medical_alerts_radio"):
+                fid = prior_field.get("id")
+                if fid and fid in prior_answers:
+                    prior_medical = prior_answers[fid]
+                    break
+        if prior_medical is None:
+            continue
+        out: dict = {}
+        for field in current_tpl.fields:
+            if field.get("type") in ("medical_alerts_dropdown", "medical_alerts_radio"):
+                out[field["id"]] = prior_medical
+        return out
+    return {}
 
 
 async def submit_form(
@@ -211,11 +257,19 @@ async def get_packet_by_code(db: AsyncSession, code: str) -> FormPacket | None:
 async def get_packet_branding(db: AsyncSession, packet: FormPacket) -> dict:
     practice = await db.get(Practice, packet.practice_id)
     location = await db.get(Location, packet.location_id)
+    address_parts = []
+    if location:
+        if location.address:
+            address_parts.append(location.address)
+        city_line = ", ".join(p for p in [location.city, location.state, location.zip_code] if p)
+        if city_line:
+            address_parts.append(city_line)
+    full_address = ", ".join(address_parts)
     return {
         "practice_name": practice.name if practice else "",
         "practice_logo_url": practice.logo_url if practice else None,
         "location_name": location.name if location else "",
-        "location_address": ", ".join(p for p in [location.address if location else "", location.city if location else ""] if p),
+        "location_address": full_address,
         "location_phone": location.phone if location else "",
     }
 
@@ -246,6 +300,7 @@ async def get_packet_forms(db: AsyncSession, packet: FormPacket) -> list[dict]:
                 "medical_alerts": medical_alerts,
             }
         )
+    out.sort(key=lambda f: f["name"].lower())
     return out
 
 

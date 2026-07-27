@@ -170,6 +170,11 @@ class FormFieldSchema(BaseModel):
     max_length: int | None = None
     conditional_field_id: str | None = None
     conditional_value: str = ""
+    label_position: str = "top"
+    sync_target: str | None = None
+    placeholder: str = ""
+    default_value: str = ""
+    width: str = "full"
 
 
 class MedicalAlertOut(BaseModel):
@@ -214,6 +219,7 @@ class FormTemplateCreate(BaseModel):
     rule_min_age: int | None = Field(default=None, ge=0)
     rule_max_age: int | None = Field(default=None, ge=0)
     rule_appointment_type_ids: list[uuid.UUID] = Field(default_factory=list)
+    rule_procedure_codes: list[str] = Field(default_factory=list)
 
 
 class FormTemplateUpdate(FormTemplateCreate):
@@ -240,13 +246,15 @@ class FormTemplateOut(BaseModel):
     rule_min_age: int | None
     rule_max_age: int | None
     rule_appointment_type_ids: list[uuid.UUID]
+    rule_procedure_codes: list[str]
     is_default: bool
     is_locked: bool = False
     created_at: datetime
 
 
 class CopyFormTemplatesRequest(BaseModel):
-    template_ids: list[uuid.UUID] = Field(min_length=1)
+    template_ids: list[uuid.UUID] = Field(default_factory=list)
+    packet_ids: list[uuid.UUID] = Field(default_factory=list)
     location_ids: list[uuid.UUID] = Field(min_length=1)
 
 

@@ -491,11 +491,13 @@ async def copy_form_templates(
     db: AsyncSession = Depends(get_db),
 ):
     try:
-        copied = await staff_service.copy_form_templates(db, ctx, payload.template_ids, payload.location_ids)
+        result = await staff_service.copy_form_templates(
+            db, ctx, payload.template_ids, payload.packet_ids, payload.location_ids
+        )
     except ValueError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
     await db.commit()
-    return {"copied": copied}
+    return result
 
 
 @router.post("/api/forms/templates/{template_id}/duplicate", response_model=FormTemplateOut, status_code=status.HTTP_201_CREATED)
@@ -617,6 +619,21 @@ async def delete_form_packet(
     await db.commit()
 
 
+@router.post("/api/forms/packets/{packet_id}/duplicate", response_model=FormPacketOut, status_code=status.HTTP_201_CREATED)
+async def duplicate_form_packet(
+    packet_id: uuid.UUID,
+    _: User = Depends(require_admin),
+    ctx: StaffContext = Depends(get_staff_context),
+    db: AsyncSession = Depends(get_db),
+):
+    packet = await staff_service.get_form_packet(db, ctx, packet_id)
+    if packet is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Packet not found")
+    copy = await staff_service.duplicate_form_packet(db, ctx, packet)
+    await db.commit()
+    return FormPacketOut.model_validate(copy)
+
+
 @router.post("/api/forms/packets/{packet_id}/public-access", response_model=FormPacketOut)
 async def enable_packet_public_access(
     packet_id: uuid.UUID,
@@ -695,7 +712,7 @@ async def form_requests(
     ctx: StaffContext = Depends(get_staff_context),
     db: AsyncSession = Depends(get_db),
 ):
-    if tab not in {"active", "expired", "synced", "all"}:
+    if tab not in {"active", "expired", "synced", "deleted", "all"}:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid tab")
     rows = await staff_service.list_form_request_batches(db, ctx, tab=tab)
     return [FormRequestBatchOut(**r) for r in rows]

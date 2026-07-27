@@ -215,6 +215,7 @@ class FormTemplate(Base):
     rule_min_age: Mapped[int | None] = mapped_column(Integer, nullable=True)
     rule_max_age: Mapped[int | None] = mapped_column(Integer, nullable=True)
     rule_appointment_type_ids: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    rule_procedure_codes: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

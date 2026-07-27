@@ -4,11 +4,13 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.dependencies import require_admin
 from app.core.staff_context import StaffContext, get_staff_context
 from app.database import get_db
+from app.models.user import User
 from app.schemas.staff import (
     ActivityOut,
     AppointmentCreate,
@@ -16,15 +18,32 @@ from app.schemas.staff import (
     AppointmentUpdate,
     DashboardStats,
     FormSubmissionOut,
+    CopyFormTemplatesRequest,
+    FormPacketCreate,
+    FormPacketOut,
+    FormPacketUpdate,
+    FormRequestBatchOut,
+    FormSubmissionDetailOut,
+    FormTemplateCreate,
     FormTemplateOut,
+    FormTemplateUpdate,
+    MedicalAlertCreate,
+    MedicalAlertOut,
+    MedicalAlertUpdate,
     MessageOut,
+    MoveMedicalAlertRequest,
     PatientCreate,
     PatientOut,
     PatientUpdate,
     PaymentLinkCreate,
     PaymentLinkOut,
+    ArchiveFormRequestsRequest,
+    AssignPublicPacketSubmissionRequest,
+    PublicPacketSubmissionOut,
+    ReactivateFormRequestsRequest,
     SendFormRequest,
     SendMessageRequest,
+    SyncFormRequestsRequest,
     VerifyInsuranceRequest,
     WaitlistCreate,
     WaitlistOut,
@@ -44,6 +63,11 @@ def _patient_out(p) -> PatientOut:
             "full_name": f"{p.first_name} {p.last_name}".strip(),
         }
     )
+
+
+async def _form_template_out(db: AsyncSession, tpl) -> FormTemplateOut:
+    locked = await staff_service.is_form_template_locked(db, tpl)
+    return FormTemplateOut.model_validate(tpl).model_copy(update={"is_locked": locked})
 
 
 def _appt_out(appt, patient) -> AppointmentOut:
@@ -245,13 +269,316 @@ async def add_waitlist(
     )
 
 
+# ── Medical alerts ───────────────────────────────────────────────────────────
+@router.get("/api/medical-alerts", response_model=list[MedicalAlertOut])
+async def medical_alerts(
+    ctx: StaffContext = Depends(get_staff_context), db: AsyncSession = Depends(get_db)
+):
+    rows = await staff_service.list_medical_alerts(db, ctx)
+    return [MedicalAlertOut.model_validate(a) for a in rows]
+
+
+@router.post("/api/medical-alerts", response_model=MedicalAlertOut, status_code=status.HTTP_201_CREATED)
+async def create_medical_alert(
+    payload: MedicalAlertCreate,
+    _: User = Depends(require_admin),
+    ctx: StaffContext = Depends(get_staff_context),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        alert = await staff_service.create_medical_alert(db, ctx, payload)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+    await db.commit()
+    return MedicalAlertOut.model_validate(alert)
+
+
+@router.patch("/api/medical-alerts/{alert_id}", response_model=MedicalAlertOut)
+async def update_medical_alert(
+    alert_id: uuid.UUID,
+    payload: MedicalAlertUpdate,
+    _: User = Depends(require_admin),
+    ctx: StaffContext = Depends(get_staff_context),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        alert = await staff_service.update_medical_alert(db, ctx, alert_id, payload)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+    await db.commit()
+    return MedicalAlertOut.model_validate(alert)
+
+
+@router.delete("/api/medical-alerts/{alert_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_medical_alert(
+    alert_id: uuid.UUID,
+    _: User = Depends(require_admin),
+    ctx: StaffContext = Depends(get_staff_context),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        await staff_service.delete_medical_alert(db, ctx, alert_id)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+    await db.commit()
+
+
+@router.post("/api/medical-alerts/{alert_id}/move")
+async def move_medical_alert(
+    alert_id: uuid.UUID,
+    payload: MoveMedicalAlertRequest,
+    _: User = Depends(require_admin),
+    ctx: StaffContext = Depends(get_staff_context),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        await staff_service.move_medical_alert(db, ctx, alert_id, payload.direction)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+    await db.commit()
+    return {"message": "Moved"}
+
+
 # ── Forms ────────────────────────────────────────────────────────────────────
 @router.get("/api/forms/templates", response_model=list[FormTemplateOut])
 async def form_templates(
+    archived: bool = Query(default=False),
+    ctx: StaffContext = Depends(get_staff_context),
+    db: AsyncSession = Depends(get_db),
+):
+    rows = await staff_service.list_form_templates(db, ctx, archived=archived)
+    return [await _form_template_out(db, t) for t in rows]
+
+
+@router.get("/api/forms/templates/frequent", response_model=list[FormTemplateOut])
+async def frequent_form_templates(
     ctx: StaffContext = Depends(get_staff_context), db: AsyncSession = Depends(get_db)
 ):
-    rows = await staff_service.list_form_templates(db, ctx)
-    return [FormTemplateOut.model_validate(t) for t in rows]
+    rows = await staff_service.list_frequent_form_templates(db, ctx)
+    return [await _form_template_out(db, t) for t in rows]
+
+
+@router.post("/api/forms/templates", response_model=FormTemplateOut, status_code=status.HTTP_201_CREATED)
+async def create_form_template(
+    payload: FormTemplateCreate,
+    _: User = Depends(require_admin),
+    ctx: StaffContext = Depends(get_staff_context),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        tpl = await staff_service.create_form_template(db, ctx, payload)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+    await db.commit()
+    return await _form_template_out(db, tpl)
+
+
+@router.patch("/api/forms/templates/{template_id}", response_model=FormTemplateOut)
+async def update_form_template(
+    template_id: uuid.UUID,
+    payload: FormTemplateUpdate,
+    _: User = Depends(require_admin),
+    ctx: StaffContext = Depends(get_staff_context),
+    db: AsyncSession = Depends(get_db),
+):
+    tpl = await staff_service.get_form_template(db, ctx, template_id)
+    if tpl is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Form template not found")
+    try:
+        tpl = await staff_service.update_form_template(db, tpl, payload)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+    await db.commit()
+    return await _form_template_out(db, tpl)
+
+
+@router.post("/api/forms/templates/digitize", response_model=FormTemplateOut, status_code=status.HTTP_201_CREATED)
+async def digitize_form_template(
+    file: UploadFile = File(...),
+    name: str = Form(...),
+    notes: str = Form(default=""),
+    _: User = Depends(require_admin),
+    ctx: StaffContext = Depends(get_staff_context),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        tpl = await staff_service.create_digitized_form_template(db, ctx, name, notes, file)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+    await db.commit()
+    return await _form_template_out(db, tpl)
+
+
+@router.post("/api/forms/templates/copy", status_code=status.HTTP_200_OK)
+async def copy_form_templates(
+    payload: CopyFormTemplatesRequest,
+    _: User = Depends(require_admin),
+    ctx: StaffContext = Depends(get_staff_context),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        copied = await staff_service.copy_form_templates(db, ctx, payload.template_ids, payload.location_ids)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+    await db.commit()
+    return {"copied": copied}
+
+
+@router.post("/api/forms/templates/{template_id}/duplicate", response_model=FormTemplateOut, status_code=status.HTTP_201_CREATED)
+async def duplicate_form_template(
+    template_id: uuid.UUID,
+    _: User = Depends(require_admin),
+    ctx: StaffContext = Depends(get_staff_context),
+    db: AsyncSession = Depends(get_db),
+):
+    tpl = await staff_service.get_form_template(db, ctx, template_id)
+    if tpl is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Form template not found")
+    copy = await staff_service.duplicate_form_template(db, ctx, tpl)
+    await db.commit()
+    return await _form_template_out(db, copy)
+
+
+@router.post("/api/forms/templates/{template_id}/archive", response_model=FormTemplateOut)
+async def archive_form_template(
+    template_id: uuid.UUID,
+    _: User = Depends(require_admin),
+    ctx: StaffContext = Depends(get_staff_context),
+    db: AsyncSession = Depends(get_db),
+):
+    tpl = await staff_service.get_form_template(db, ctx, template_id)
+    if tpl is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Form template not found")
+    tpl = await staff_service.archive_form_template(db, tpl)
+    await db.commit()
+    return await _form_template_out(db, tpl)
+
+
+@router.post("/api/forms/templates/{template_id}/unarchive", response_model=FormTemplateOut)
+async def unarchive_form_template(
+    template_id: uuid.UUID,
+    _: User = Depends(require_admin),
+    ctx: StaffContext = Depends(get_staff_context),
+    db: AsyncSession = Depends(get_db),
+):
+    tpl = await staff_service.get_form_template(db, ctx, template_id)
+    if tpl is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Form template not found")
+    tpl = await staff_service.unarchive_form_template(db, tpl)
+    await db.commit()
+    return await _form_template_out(db, tpl)
+
+
+@router.post("/api/forms/templates/{template_id}/set-default", response_model=FormTemplateOut)
+async def set_default_form_template(
+    template_id: uuid.UUID,
+    _: User = Depends(require_admin),
+    ctx: StaffContext = Depends(get_staff_context),
+    db: AsyncSession = Depends(get_db),
+):
+    tpl = await staff_service.get_form_template(db, ctx, template_id)
+    if tpl is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Form template not found")
+    try:
+        await staff_service.set_default_form_template(db, ctx, tpl)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+    await db.commit()
+    return await _form_template_out(db, tpl)
+
+
+@router.get("/api/forms/packets", response_model=list[FormPacketOut])
+async def form_packets(
+    ctx: StaffContext = Depends(get_staff_context), db: AsyncSession = Depends(get_db)
+):
+    rows = await staff_service.list_form_packets(db, ctx)
+    return [FormPacketOut.model_validate(p) for p in rows]
+
+
+@router.post("/api/forms/packets", response_model=FormPacketOut, status_code=status.HTTP_201_CREATED)
+async def create_form_packet(
+    payload: FormPacketCreate,
+    _: User = Depends(require_admin),
+    ctx: StaffContext = Depends(get_staff_context),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        packet = await staff_service.create_form_packet(db, ctx, payload)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+    await db.commit()
+    return FormPacketOut.model_validate(packet)
+
+
+@router.patch("/api/forms/packets/{packet_id}", response_model=FormPacketOut)
+async def update_form_packet(
+    packet_id: uuid.UUID,
+    payload: FormPacketUpdate,
+    _: User = Depends(require_admin),
+    ctx: StaffContext = Depends(get_staff_context),
+    db: AsyncSession = Depends(get_db),
+):
+    packet = await staff_service.get_form_packet(db, ctx, packet_id)
+    if packet is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Packet not found")
+    try:
+        packet = await staff_service.update_form_packet(db, packet, payload)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+    await db.commit()
+    return FormPacketOut.model_validate(packet)
+
+
+@router.delete("/api/forms/packets/{packet_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_form_packet(
+    packet_id: uuid.UUID,
+    _: User = Depends(require_admin),
+    ctx: StaffContext = Depends(get_staff_context),
+    db: AsyncSession = Depends(get_db),
+):
+    packet = await staff_service.get_form_packet(db, ctx, packet_id)
+    if packet is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Packet not found")
+    await staff_service.delete_form_packet(db, packet)
+    await db.commit()
+
+
+@router.post("/api/forms/packets/{packet_id}/public-access", response_model=FormPacketOut)
+async def enable_packet_public_access(
+    packet_id: uuid.UUID,
+    _: User = Depends(require_admin),
+    ctx: StaffContext = Depends(get_staff_context),
+    db: AsyncSession = Depends(get_db),
+):
+    packet = await staff_service.get_form_packet(db, ctx, packet_id)
+    if packet is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Packet not found")
+    packet = await staff_service.enable_packet_public_access(db, packet)
+    await db.commit()
+    return FormPacketOut.model_validate(packet)
+
+
+@router.get("/api/forms/public-submissions", response_model=list[PublicPacketSubmissionOut])
+async def public_packet_submissions(
+    ctx: StaffContext = Depends(get_staff_context), db: AsyncSession = Depends(get_db)
+):
+    rows = await staff_service.list_public_packet_submissions(db, ctx)
+    return [PublicPacketSubmissionOut(**row) for row in rows]
+
+
+@router.post("/api/forms/public-submissions/{submission_id}/assign")
+async def assign_public_packet_submission(
+    submission_id: uuid.UUID,
+    payload: AssignPublicPacketSubmissionRequest,
+    ctx: StaffContext = Depends(get_staff_context),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        await staff_service.assign_public_packet_submission(db, ctx, submission_id, payload.patient_id)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+    await db.commit()
+    return {"message": "Submission assigned"}
 
 
 @router.get("/api/forms/submissions", response_model=list[FormSubmissionOut])
@@ -281,11 +608,89 @@ async def send_form(
     db: AsyncSession = Depends(get_db),
 ):
     try:
-        await staff_service.send_form(db, ctx, payload)
+        requests = await staff_service.send_form(db, ctx, payload)
     except ValueError as exc:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc))
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
     await db.commit()
-    return {"message": "Form sent to patient"}
+    return {"message": "Form(s) sent to patient", "count": len(requests)}
+
+
+@router.get("/api/forms/requests", response_model=list[FormRequestBatchOut])
+async def form_requests(
+    tab: str = Query(default="all"),
+    ctx: StaffContext = Depends(get_staff_context),
+    db: AsyncSession = Depends(get_db),
+):
+    if tab not in {"active", "expired", "synced", "all"}:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid tab")
+    rows = await staff_service.list_form_request_batches(db, ctx, tab=tab)
+    return [FormRequestBatchOut(**r) for r in rows]
+
+
+@router.post("/api/forms/requests/reactivate")
+async def reactivate_form_requests(
+    payload: ReactivateFormRequestsRequest,
+    ctx: StaffContext = Depends(get_staff_context),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        await staff_service.reactivate_form_requests(db, ctx, payload.request_ids, payload.expires_at)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+    await db.commit()
+    return {"message": "Form request moved to active"}
+
+
+@router.post("/api/forms/requests/archive")
+async def archive_form_requests(
+    payload: ArchiveFormRequestsRequest,
+    ctx: StaffContext = Depends(get_staff_context),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        await staff_service.archive_form_requests(db, ctx, payload.request_ids)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+    await db.commit()
+    return {"message": "Form request archived"}
+
+
+@router.post("/api/forms/requests/sync")
+async def sync_form_requests(
+    payload: SyncFormRequestsRequest,
+    ctx: StaffContext = Depends(get_staff_context),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        await staff_service.sync_form_requests(db, ctx, payload.request_ids)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+    await db.commit()
+    return {"message": "Sync attempted"}
+
+
+@router.post("/api/forms/requests/mark-synced")
+async def mark_synced_form_requests(
+    payload: SyncFormRequestsRequest,
+    ctx: StaffContext = Depends(get_staff_context),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        await staff_service.mark_synced_form_requests(db, ctx, payload.request_ids)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+    await db.commit()
+    return {"message": "Marked as synced"}
+
+
+@router.get("/api/forms/requests/submissions", response_model=list[FormSubmissionDetailOut])
+async def form_request_submissions(
+    request_ids: list[uuid.UUID] = Query(default=[]),
+    ctx: StaffContext = Depends(get_staff_context),
+    db: AsyncSession = Depends(get_db),
+):
+    rows = await staff_service.get_form_request_submissions(db, ctx, request_ids)
+    return [FormSubmissionDetailOut(form_name=r.form_name, answers=r.answers, submitted_at=r.submitted_at) for r in rows]
 
 
 # ── Communications ───────────────────────────────────────────────────────────

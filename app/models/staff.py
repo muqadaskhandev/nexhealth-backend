@@ -160,13 +160,70 @@ class WaitlistEntry(Base):
     )
 
 
+class MedicalAlert(Base):
+    """One entry in a practice location's medical alert catalog (conditions/allergies/medications),
+    the list a Medical History form field reads from — this app's analog of "read directly from
+    your health record system" (no real EHR integration exists in this demo)."""
+
+    __tablename__ = "medical_alerts"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    practice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("practices.id", ondelete="CASCADE"))
+    location_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("locations.id", ondelete="CASCADE"), index=True
+    )
+    category: Mapped[str] = mapped_column(String(20), nullable=False)
+    label: Mapped[str] = mapped_column(String(200), nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    flash: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    snomed_code: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
 class FormTemplate(Base):
     __tablename__ = "form_templates"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     practice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("practices.id", ondelete="CASCADE"))
+    location_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("locations.id", ondelete="CASCADE"), index=True
+    )
     name: Mapped[str] = mapped_column(String(200), nullable=False)
-    form_type: Mapped[str] = mapped_column(String(80), nullable=False, default="intake")
+    form_type: Mapped[str] = mapped_column(String(80), nullable=False, default="")
+    source: Mapped[str] = mapped_column(String(20), nullable=False, default="build")
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
+    display_type: Mapped[str] = mapped_column(String(20), nullable=False, default="wizard")
+    fields: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    page_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    uploaded_file_url: Mapped[str | None] = mapped_column(String, nullable=True)
+    digitize_notes: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    send_automatically: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    rule_patient_status: Mapped[str] = mapped_column(String(20), nullable=False, default="any")
+    rule_frequency_months: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    rule_min_age: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    rule_max_age: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    rule_appointment_type_ids: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class FormPacket(Base):
+    __tablename__ = "form_packets"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    practice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("practices.id", ondelete="CASCADE"))
+    location_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("locations.id", ondelete="CASCADE"), index=True
+    )
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    form_template_ids: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    public_code: Mapped[str | None] = mapped_column(String(32), unique=True, index=True, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -190,6 +247,11 @@ class FormRequest(Base):
     sent_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    viewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    sync_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class FormSubmission(Base):
@@ -203,7 +265,48 @@ class FormSubmission(Base):
     form_name: Mapped[str] = mapped_column(String(200), nullable=False)
     device: Mapped[str] = mapped_column(String(80), nullable=False, default="web")
     sync_status: Mapped[str] = mapped_column(String(40), nullable=False, default="complete")
+    answers: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     submitted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class FormAccessToken(Base):
+    """Opaque token granting a patient (no staff login) access to their pending forms."""
+
+    __tablename__ = "form_access_tokens"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True, nullable=False)
+    practice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("practices.id", ondelete="CASCADE"))
+    location_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("locations.id", ondelete="CASCADE"))
+    patient_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("patients.id", ondelete="CASCADE"))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class PublicPacketSubmission(Base):
+    """A packet filled out via a public (no-login) link, awaiting staff Assign & sync."""
+
+    __tablename__ = "public_packet_submissions"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    practice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("practices.id", ondelete="CASCADE"))
+    location_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("locations.id", ondelete="CASCADE"))
+    form_packet_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("form_packets.id", ondelete="CASCADE"))
+    first_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    last_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    dob: Mapped[date | None] = mapped_column(Date, nullable=True)
+    phone: Mapped[str] = mapped_column(String(40), nullable=False, default="")
+    email: Mapped[str] = mapped_column(String(320), nullable=False, default="")
+    submissions: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    assigned_patient_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("patients.id", ondelete="SET NULL"), nullable=True
+    )
+    synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 

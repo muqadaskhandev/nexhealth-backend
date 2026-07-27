@@ -130,12 +130,170 @@ class WaitlistCreate(BaseModel):
     notes: str = ""
 
 
+class FormFieldSchema(BaseModel):
+    id: str
+    type: str
+    label: str
+    required: bool = False
+    options: list[str] = Field(default_factory=list)
+    page: int = 1
+    min_length: int | None = None
+    max_length: int | None = None
+    conditional_field_id: str | None = None
+    conditional_value: str = ""
+
+
+class MedicalAlertOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    category: str
+    label: str
+    active: bool
+    flash: bool
+    sort_order: int
+    snomed_code: str | None = None
+
+
+class MedicalAlertCreate(BaseModel):
+    category: str
+    label: str = Field(min_length=1, max_length=200)
+    flash: bool = False
+    snomed_code: str | None = Field(default=None, max_length=20)
+
+
+class MedicalAlertUpdate(BaseModel):
+    label: str | None = None
+    active: bool | None = None
+    flash: bool | None = None
+    snomed_code: str | None = None
+
+
+class MoveMedicalAlertRequest(BaseModel):
+    direction: str = Field(pattern="^(up|down)$")
+
+
+class FormTemplateCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    form_type: str = ""
+    display_type: str = "wizard"
+    fields: list[FormFieldSchema] = Field(min_length=1)
+    page_count: int = Field(default=1, ge=1)
+    send_automatically: bool = False
+    rule_patient_status: str = "any"
+    rule_frequency_months: int | None = Field(default=None, ge=1)
+    rule_min_age: int | None = Field(default=None, ge=0)
+    rule_max_age: int | None = Field(default=None, ge=0)
+    rule_appointment_type_ids: list[uuid.UUID] = Field(default_factory=list)
+
+
+class FormTemplateUpdate(FormTemplateCreate):
+    pass
+
+
 class FormTemplateOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
     name: str
     form_type: str
+    source: str
+    status: str
+    display_type: str
+    fields: list[FormFieldSchema]
+    page_count: int
+    uploaded_file_url: str | None
+    digitize_notes: str
+    archived_at: datetime | None
+    send_automatically: bool
+    rule_patient_status: str
+    rule_frequency_months: int | None
+    rule_min_age: int | None
+    rule_max_age: int | None
+    rule_appointment_type_ids: list[uuid.UUID]
+    is_default: bool
+    is_locked: bool = False
+    created_at: datetime
+
+
+class CopyFormTemplatesRequest(BaseModel):
+    template_ids: list[uuid.UUID] = Field(min_length=1)
+    location_ids: list[uuid.UUID] = Field(min_length=1)
+
+
+class FormPacketCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    form_template_ids: list[uuid.UUID] = Field(min_length=1)
+
+
+class FormPacketUpdate(FormPacketCreate):
+    pass
+
+
+class FormPacketOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    name: str
+    form_template_ids: list[uuid.UUID]
+    public_code: str | None
+    created_at: datetime
+
+
+class PublicPacketSubmissionOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    form_packet_id: uuid.UUID
+    packet_name: str = ""
+    first_name: str
+    last_name: str
+    dob: date | None
+    phone: str
+    email: str
+    form_names: list[str] = Field(default_factory=list)
+    created_at: datetime
+
+
+class AssignPublicPacketSubmissionRequest(BaseModel):
+    patient_id: uuid.UUID
+
+
+class FormRequestFormOut(BaseModel):
+    id: uuid.UUID
+    name: str
+
+
+class FormRequestBatchOut(BaseModel):
+    patient_id: uuid.UUID
+    patient_name: str
+    patient_initials: str
+    request_ids: list[uuid.UUID]
+    sent_at: datetime
+    expires_at: datetime
+    forms: list[FormRequestFormOut]
+    status: str
+    completed_status: str
+    sync_status: str | None = None
+
+
+class ReactivateFormRequestsRequest(BaseModel):
+    request_ids: list[uuid.UUID] = Field(min_length=1)
+    expires_at: datetime
+
+
+class ArchiveFormRequestsRequest(BaseModel):
+    request_ids: list[uuid.UUID] = Field(min_length=1)
+
+
+class SyncFormRequestsRequest(BaseModel):
+    request_ids: list[uuid.UUID] = Field(min_length=1)
+
+
+class FormSubmissionDetailOut(BaseModel):
+    form_name: str
+    answers: dict[str, Any]
+    submitted_at: datetime
 
 
 class FormSubmissionOut(BaseModel):
@@ -153,7 +311,10 @@ class FormSubmissionOut(BaseModel):
 
 class SendFormRequest(BaseModel):
     patient_id: uuid.UUID
-    form_template_id: uuid.UUID
+    form_template_ids: list[uuid.UUID] = Field(min_length=1)
+    expires_at: datetime | None = None
+    message: str | None = None
+    email_note: str | None = None
 
 
 class MessageOut(BaseModel):

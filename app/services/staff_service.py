@@ -2,17 +2,23 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, time, timezone
+from datetime import datetime, time, timedelta, timezone
 from decimal import Decimal
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
+from app.core import security
 from app.core.staff_context import StaffContext
+from app.models.appointment_types import AppointmentTypeDef
+from app.models.location import Location
 from app.models.staff import (
     ActivityType,
     Appointment,
     AppointmentStatus,
+    FormAccessToken,
+    FormPacket,
     FormRequest,
     FormRequestStatus,
     FormSubmission,
@@ -22,16 +28,24 @@ from app.models.staff import (
     Message,
     MessageChannel,
     MessageThread,
+    MedicalAlert,
     Patient,
     PatientActivity,
     PaymentLink,
     PaymentStatus,
+    PublicPacketSubmission,
     WaitlistEntry,
     WaitlistStatus,
 )
 from app.schemas.staff import (
     AppointmentCreate,
     AppointmentUpdate,
+    FormPacketCreate,
+    FormPacketUpdate,
+    FormTemplateCreate,
+    FormTemplateUpdate,
+    MedicalAlertCreate,
+    MedicalAlertUpdate,
     PatientCreate,
     PatientUpdate,
     PaymentLinkCreate,
@@ -39,10 +53,58 @@ from app.schemas.staff import (
     SendMessageRequest,
     WaitlistCreate,
 )
+from app.services import form_upload_storage
+
+FORM_FIELD_TYPES = {
+    "text", "textarea", "email", "number", "phone",
+    "checkbox", "select_boxes", "dropdown", "radio",
+    "date", "date_entry", "address", "file", "signature",
+    "insurance", "preferred_language", "payment",
+    "content", "location_logo",
+    "medical_alerts_dropdown", "medical_alerts_radio",
+}
+
+MEDICAL_ALERT_CATEGORIES = ("condition", "allergy", "medication")
+
+RULE_PATIENT_STATUSES = {"any", "new", "existing"}
 
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+FORM_REQUEST_EXPIRY_GRACE_HOURS = 12
+
+
+def _compute_expires_at(amount: int, unit: str, from_dt: datetime) -> datetime:
+    if unit == "weeks":
+        return from_dt + timedelta(weeks=amount)
+    if unit == "months":
+        return from_dt + timedelta(days=30 * amount)
+    return from_dt + timedelta(days=amount)
+
+
+async def create_form_access_token(
+    db: AsyncSession,
+    *,
+    practice_id: uuid.UUID,
+    location_id: uuid.UUID,
+    patient_id: uuid.UUID,
+    expires_at: datetime,
+) -> str:
+    """Creates an opaque link token for the patient forms portal and returns the raw value (never stored)."""
+    raw = security.generate_opaque_token()
+    db.add(
+        FormAccessToken(
+            token_hash=security.hash_token(raw),
+            practice_id=practice_id,
+            location_id=location_id,
+            patient_id=patient_id,
+            expires_at=expires_at,
+        )
+    )
+    await db.flush()
+    return raw
 
 
 async def _log_activity(
@@ -239,6 +301,7 @@ async def create_appointment(
         title=f"Appointment scheduled — {data.appointment_type}",
         meta={"appointment_id": str(appt.id)},
     )
+    await evaluate_automatic_form_requests(db, ctx, appt)
     return appt
 
 
@@ -303,13 +366,605 @@ async def add_waitlist(
 
 
 # ── Forms ────────────────────────────────────────────────────────────────────
-async def list_form_templates(db: AsyncSession, ctx: StaffContext) -> list[FormTemplate]:
+def _validate_form_fields(data: FormTemplateCreate | FormTemplateUpdate) -> None:
+    field_ids = {f.id for f in data.fields}
+    for field in data.fields:
+        if not field.label.strip():
+            raise ValueError("Every field needs a label")
+        if field.type not in FORM_FIELD_TYPES:
+            raise ValueError(f"Unknown field type: {field.type}")
+        if not (1 <= field.page <= data.page_count):
+            raise ValueError(f"Field '{field.label}' is on a page outside the form's page count")
+        if field.min_length is not None and field.max_length is not None and field.min_length > field.max_length:
+            raise ValueError(f"Field '{field.label}' has a minimum length greater than its maximum length")
+        if field.conditional_field_id:
+            if field.conditional_field_id == field.id:
+                raise ValueError(f"Field '{field.label}' can't be conditional on itself")
+            if field.conditional_field_id not in field_ids:
+                raise ValueError(f"Field '{field.label}' references a condition field that doesn't exist")
+
+
+def _validate_automation_rule(data: FormTemplateCreate | FormTemplateUpdate) -> None:
+    if data.rule_patient_status not in RULE_PATIENT_STATUSES:
+        raise ValueError(f"Unknown patient status rule: {data.rule_patient_status}")
+    if data.rule_min_age is not None and data.rule_max_age is not None and data.rule_min_age > data.rule_max_age:
+        raise ValueError("Minimum age can't be greater than maximum age")
+
+
+# ── Medical alerts (Integrated Medical History forms) ───────────────────────
+_STARTER_MEDICAL_ALERTS = {
+    "condition": ["Anemia", "Artificial Joints", "Diabetes", "Head Injuries", "Heart Disease", "High Blood Pressure", "Jaundice", "Kidney Disease"],
+    "allergy": ["Penicillin", "Latex", "Aspirin", "Sulfa Drugs", "Local Anesthetics"],
+    "medication": ["Aspirin", "Ibuprofen", "Blood Thinners", "Insulin", "Antibiotics"],
+}
+
+
+async def _ensure_medical_alerts_seeded(db: AsyncSession, practice_id: uuid.UUID, location_id: uuid.UUID) -> None:
+    result = await db.execute(
+        select(func.count()).select_from(MedicalAlert).where(
+            MedicalAlert.practice_id == practice_id,
+            MedicalAlert.location_id == location_id,
+        )
+    )
+    if result.scalar_one() > 0:
+        return
+    for category, labels in _STARTER_MEDICAL_ALERTS.items():
+        for i, label in enumerate(labels):
+            db.add(MedicalAlert(practice_id=practice_id, location_id=location_id, category=category, label=label, sort_order=i))
+    await db.flush()
+
+
+async def list_medical_alerts(db: AsyncSession, ctx: StaffContext) -> list[MedicalAlert]:
+    await _ensure_medical_alerts_seeded(db, ctx.practice_id, ctx.location_id)
+    result = await db.execute(
+        select(MedicalAlert)
+        .where(MedicalAlert.practice_id == ctx.practice_id, MedicalAlert.location_id == ctx.location_id)
+        .order_by(MedicalAlert.category, MedicalAlert.sort_order)
+    )
+    return list(result.scalars().all())
+
+
+async def create_medical_alert(db: AsyncSession, ctx: StaffContext, data: MedicalAlertCreate) -> MedicalAlert:
+    if data.category not in MEDICAL_ALERT_CATEGORIES:
+        raise ValueError(f"Unknown category: {data.category}")
+    if not data.label.strip():
+        raise ValueError("Label is required")
+    result = await db.execute(
+        select(func.max(MedicalAlert.sort_order)).where(
+            MedicalAlert.practice_id == ctx.practice_id,
+            MedicalAlert.location_id == ctx.location_id,
+            MedicalAlert.category == data.category,
+        )
+    )
+    next_order = (result.scalar_one() or 0) + 1
+    alert = MedicalAlert(
+        practice_id=ctx.practice_id,
+        location_id=ctx.location_id,
+        category=data.category,
+        label=data.label.strip(),
+        flash=data.flash,
+        sort_order=next_order,
+        snomed_code=(data.snomed_code.strip() or None) if data.snomed_code is not None else None,
+    )
+    db.add(alert)
+    await db.flush()
+    return alert
+
+
+async def update_medical_alert(
+    db: AsyncSession, ctx: StaffContext, alert_id: uuid.UUID, data: MedicalAlertUpdate
+) -> MedicalAlert:
+    alert = await db.get(MedicalAlert, alert_id)
+    if alert is None or alert.practice_id != ctx.practice_id or alert.location_id != ctx.location_id:
+        raise ValueError("Medical alert not found")
+    if data.label is not None:
+        if not data.label.strip():
+            raise ValueError("Label is required")
+        alert.label = data.label.strip()
+    if data.active is not None:
+        alert.active = data.active
+    if data.flash is not None:
+        alert.flash = data.flash
+    if data.snomed_code is not None:
+        alert.snomed_code = data.snomed_code.strip() or None
+    await db.flush()
+    return alert
+
+
+async def delete_medical_alert(db: AsyncSession, ctx: StaffContext, alert_id: uuid.UUID) -> None:
+    alert = await db.get(MedicalAlert, alert_id)
+    if alert is None or alert.practice_id != ctx.practice_id or alert.location_id != ctx.location_id:
+        raise ValueError("Medical alert not found")
+    await db.delete(alert)
+    await db.flush()
+
+
+async def move_medical_alert(db: AsyncSession, ctx: StaffContext, alert_id: uuid.UUID, direction: str) -> None:
+    if direction not in ("up", "down"):
+        raise ValueError("Direction must be 'up' or 'down'")
+    alert = await db.get(MedicalAlert, alert_id)
+    if alert is None or alert.practice_id != ctx.practice_id or alert.location_id != ctx.location_id:
+        raise ValueError("Medical alert not found")
+
+    result = await db.execute(
+        select(MedicalAlert)
+        .where(
+            MedicalAlert.practice_id == ctx.practice_id,
+            MedicalAlert.location_id == ctx.location_id,
+            MedicalAlert.category == alert.category,
+        )
+        .order_by(MedicalAlert.sort_order)
+    )
+    siblings = result.scalars().all()
+    idx = next(i for i, a in enumerate(siblings) if a.id == alert.id)
+    swap_idx = idx - 1 if direction == "up" else idx + 1
+    if swap_idx < 0 or swap_idx >= len(siblings):
+        return
+    other = siblings[swap_idx]
+    alert.sort_order, other.sort_order = other.sort_order, alert.sort_order
+    await db.flush()
+
+
+def _is_quoted_alert_label(label: str) -> bool:
+    """Alerts phrased as a quoted question (e.g. "Are you allergic to peanuts?") are
+    internal/PDF-only artifacts in some EHRs (Open Dental) — they never become a real
+    patient-facing prompt, matching "NexHealth no longer creates long-form questions
+    from alerts that have quotation marks around them."."""
+    stripped = label.strip()
+    return len(stripped) >= 2 and stripped.startswith('"') and stripped.endswith('"')
+
+
+async def get_medical_alert_catalog(db: AsyncSession, practice_id: uuid.UUID, location_id: uuid.UUID) -> dict:
+    await _ensure_medical_alerts_seeded(db, practice_id, location_id)
+    result = await db.execute(
+        select(MedicalAlert)
+        .where(
+            MedicalAlert.practice_id == practice_id,
+            MedicalAlert.location_id == location_id,
+            MedicalAlert.active.is_(True),
+        )
+        .order_by(MedicalAlert.category, MedicalAlert.sort_order)
+    )
+    catalog: dict[str, list[dict]] = {cat: [] for cat in MEDICAL_ALERT_CATEGORIES}
+    for a in result.scalars().all():
+        if _is_quoted_alert_label(a.label):
+            continue
+        catalog.setdefault(a.category, []).append({"id": str(a.id), "label": a.label})
+    return catalog
+
+
+def form_has_medical_alerts(template: FormTemplate) -> bool:
+    return any(f.get("type") in ("medical_alerts_dropdown", "medical_alerts_radio") for f in template.fields)
+
+
+async def seed_default_medical_history_form(
+    db: AsyncSession, practice_id: uuid.UUID, location_id: uuid.UUID
+) -> None:
+    """New locations get a Medical History form out of the box — "the Medical History
+    form is automatically generated when the Synchronizer is installed" (matches this
+    app's equivalent moment: when a new location is created)."""
+    result = await db.execute(
+        select(func.count()).select_from(FormTemplate).where(
+            FormTemplate.practice_id == practice_id,
+            FormTemplate.location_id == location_id,
+        )
+    )
+    if result.scalar_one() > 0:
+        return
+    db.add(
+        FormTemplate(
+            practice_id=practice_id,
+            location_id=location_id,
+            name="Medical History",
+            form_type="Medical",
+            source="build",
+            status="active",
+            display_type="wizard",
+            fields=[
+                {
+                    "id": "medical-alerts",
+                    "type": "medical_alerts_dropdown",
+                    "label": "Medical History",
+                    "required": True,
+                    "options": [],
+                    "page": 1,
+                    "min_length": None,
+                    "max_length": None,
+                    "conditional_field_id": None,
+                    "conditional_value": "",
+                }
+            ],
+            page_count=1,
+            is_default=True,
+        )
+    )
+    await db.flush()
+
+
+async def list_form_templates(
+    db: AsyncSession, ctx: StaffContext, *, archived: bool = False
+) -> list[FormTemplate]:
+    archived_filter = FormTemplate.archived_at.isnot(None) if archived else FormTemplate.archived_at.is_(None)
     result = await db.execute(
         select(FormTemplate)
-        .where(FormTemplate.practice_id == ctx.practice_id)
+        .where(
+            FormTemplate.practice_id == ctx.practice_id,
+            FormTemplate.location_id == ctx.location_id,
+            archived_filter,
+        )
         .order_by(FormTemplate.name)
     )
     return list(result.scalars().all())
+
+
+async def get_form_template(db: AsyncSession, ctx: StaffContext, template_id: uuid.UUID) -> FormTemplate | None:
+    tpl = await db.get(FormTemplate, template_id)
+    if tpl is None or tpl.practice_id != ctx.practice_id or tpl.location_id != ctx.location_id:
+        return None
+    return tpl
+
+
+async def create_form_template(db: AsyncSession, ctx: StaffContext, data: FormTemplateCreate) -> FormTemplate:
+    if not data.name.strip():
+        raise ValueError("Name is required")
+    _validate_form_fields(data)
+    _validate_automation_rule(data)
+    tpl = FormTemplate(
+        practice_id=ctx.practice_id,
+        location_id=ctx.location_id,
+        name=data.name.strip(),
+        form_type=data.form_type,
+        display_type=data.display_type,
+        fields=[f.model_dump() for f in data.fields],
+        page_count=data.page_count,
+        source="build",
+        status="active",
+        send_automatically=data.send_automatically,
+        rule_patient_status=data.rule_patient_status,
+        rule_frequency_months=data.rule_frequency_months,
+        rule_min_age=data.rule_min_age,
+        rule_max_age=data.rule_max_age,
+        rule_appointment_type_ids=[str(i) for i in data.rule_appointment_type_ids],
+    )
+    db.add(tpl)
+    await db.flush()
+    return tpl
+
+
+async def has_form_submissions(db: AsyncSession, template_id: uuid.UUID) -> bool:
+    result = await db.execute(
+        select(func.count())
+        .select_from(FormSubmission)
+        .join(FormRequest, FormRequest.id == FormSubmission.form_request_id)
+        .where(FormRequest.form_template_id == template_id)
+    )
+    return result.scalar_one() > 0
+
+
+async def is_form_template_locked(db: AsyncSession, template: FormTemplate) -> bool:
+    """Medical History forms become immutable once a real patient has submitted one —
+    mirrors Eaglesoft's own "can't edit a filled-out Medical Form" rule."""
+    if not form_has_medical_alerts(template):
+        return False
+    return await has_form_submissions(db, template.id)
+
+
+async def update_form_template(
+    db: AsyncSession, template: FormTemplate, data: FormTemplateUpdate
+) -> FormTemplate:
+    if await is_form_template_locked(db, template):
+        raise ValueError(
+            "This Medical History form has real patient submissions and can't be edited — duplicate it to make changes."
+        )
+    if not data.name.strip():
+        raise ValueError("Name is required")
+    _validate_form_fields(data)
+    _validate_automation_rule(data)
+    template.name = data.name.strip()
+    template.form_type = data.form_type
+    template.display_type = data.display_type
+    template.fields = [f.model_dump() for f in data.fields]
+    template.page_count = data.page_count
+    template.send_automatically = data.send_automatically
+    template.rule_patient_status = data.rule_patient_status
+    template.rule_frequency_months = data.rule_frequency_months
+    template.rule_min_age = data.rule_min_age
+    template.rule_max_age = data.rule_max_age
+    template.rule_appointment_type_ids = [str(i) for i in data.rule_appointment_type_ids]
+    await db.flush()
+    return template
+
+
+async def create_digitized_form_template(
+    db: AsyncSession, ctx: StaffContext, name: str, notes: str, upload
+) -> FormTemplate:
+    if not name.strip():
+        raise ValueError("Name is required")
+    file_url = await form_upload_storage.save_form_upload(upload)
+    tpl = FormTemplate(
+        practice_id=ctx.practice_id,
+        location_id=ctx.location_id,
+        name=name.strip(),
+        source="digitize",
+        status="digitizing",
+        digitize_notes=notes,
+        uploaded_file_url=file_url,
+        fields=[],
+    )
+    db.add(tpl)
+    await db.flush()
+    return tpl
+
+
+async def duplicate_form_template(db: AsyncSession, ctx: StaffContext, template: FormTemplate) -> FormTemplate:
+    copy = FormTemplate(
+        practice_id=ctx.practice_id,
+        location_id=ctx.location_id,
+        name=f"{template.name} (copy)",
+        form_type=template.form_type,
+        source=template.source,
+        status=template.status,
+        display_type=template.display_type,
+        fields=template.fields,
+        page_count=template.page_count,
+        uploaded_file_url=template.uploaded_file_url,
+        digitize_notes=template.digitize_notes,
+        send_automatically=template.send_automatically,
+        rule_patient_status=template.rule_patient_status,
+        rule_frequency_months=template.rule_frequency_months,
+        rule_min_age=template.rule_min_age,
+        rule_max_age=template.rule_max_age,
+        rule_appointment_type_ids=template.rule_appointment_type_ids,
+    )
+    db.add(copy)
+    await db.flush()
+    return copy
+
+
+async def set_default_form_template(db: AsyncSession, ctx: StaffContext, template: FormTemplate) -> None:
+    if not form_has_medical_alerts(template):
+        raise ValueError("Only Medical History forms can be marked as default")
+    result = await db.execute(
+        select(FormTemplate).where(
+            FormTemplate.practice_id == ctx.practice_id,
+            FormTemplate.location_id == ctx.location_id,
+            FormTemplate.is_default.is_(True),
+        )
+    )
+    for other in result.scalars().all():
+        other.is_default = False
+    template.is_default = True
+    await db.flush()
+
+
+async def copy_form_templates(
+    db: AsyncSession, ctx: StaffContext, template_ids: list[uuid.UUID], location_ids: list[uuid.UUID]
+) -> int:
+    result = await db.execute(
+        select(FormTemplate).where(
+            FormTemplate.id.in_(template_ids),
+            FormTemplate.practice_id == ctx.practice_id,
+            FormTemplate.location_id == ctx.location_id,
+        )
+    )
+    sources = result.scalars().all()
+    if len(sources) != len(set(template_ids)):
+        raise ValueError("Some forms could not be found in your current location")
+
+    target_locations = [lid for lid in dict.fromkeys(location_ids) if lid != ctx.location_id]
+    if not target_locations:
+        raise ValueError("Select at least one other location to copy to")
+
+    copied = 0
+    for loc_id in target_locations:
+        for src in sources:
+            existing_result = await db.execute(
+                select(FormTemplate).where(
+                    FormTemplate.practice_id == ctx.practice_id,
+                    FormTemplate.location_id == loc_id,
+                    FormTemplate.name == src.name,
+                )
+            )
+            existing = existing_result.scalar_one_or_none()
+            if existing:
+                existing.form_type = src.form_type
+                existing.source = src.source
+                existing.status = src.status
+                existing.display_type = src.display_type
+                existing.fields = src.fields
+                existing.page_count = src.page_count
+                existing.uploaded_file_url = src.uploaded_file_url
+                existing.digitize_notes = src.digitize_notes
+            else:
+                db.add(FormTemplate(
+                    practice_id=ctx.practice_id,
+                    location_id=loc_id,
+                    name=src.name,
+                    form_type=src.form_type,
+                    source=src.source,
+                    status=src.status,
+                    display_type=src.display_type,
+                    fields=src.fields,
+                    page_count=src.page_count,
+                    uploaded_file_url=src.uploaded_file_url,
+                    digitize_notes=src.digitize_notes,
+                ))
+            copied += 1
+    await db.flush()
+    return copied
+
+
+async def archive_form_template(db: AsyncSession, template: FormTemplate) -> FormTemplate:
+    template.archived_at = _now()
+    await db.flush()
+    return template
+
+
+async def unarchive_form_template(db: AsyncSession, template: FormTemplate) -> FormTemplate:
+    template.archived_at = None
+    await db.flush()
+    return template
+
+
+async def _validate_packet_forms(
+    db: AsyncSession, practice_id: uuid.UUID, location_id: uuid.UUID, form_template_ids: list[uuid.UUID]
+) -> None:
+    result = await db.execute(
+        select(FormTemplate.id).where(
+            FormTemplate.id.in_(form_template_ids),
+            FormTemplate.practice_id == practice_id,
+            FormTemplate.location_id == location_id,
+        )
+    )
+    found = {row[0] for row in result.all()}
+    if found != set(form_template_ids):
+        raise ValueError("Some forms could not be found in your current location")
+
+
+async def list_form_packets(db: AsyncSession, ctx: StaffContext) -> list[FormPacket]:
+    result = await db.execute(
+        select(FormPacket)
+        .where(FormPacket.practice_id == ctx.practice_id, FormPacket.location_id == ctx.location_id)
+        .order_by(FormPacket.name)
+    )
+    return list(result.scalars().all())
+
+
+async def get_form_packet(db: AsyncSession, ctx: StaffContext, packet_id: uuid.UUID) -> FormPacket | None:
+    packet = await db.get(FormPacket, packet_id)
+    if packet is None or packet.practice_id != ctx.practice_id or packet.location_id != ctx.location_id:
+        return None
+    return packet
+
+
+async def create_form_packet(db: AsyncSession, ctx: StaffContext, data: FormPacketCreate) -> FormPacket:
+    if not data.name.strip():
+        raise ValueError("Name is required")
+    await _validate_packet_forms(db, ctx.practice_id, ctx.location_id, data.form_template_ids)
+    packet = FormPacket(
+        practice_id=ctx.practice_id,
+        location_id=ctx.location_id,
+        name=data.name.strip(),
+        form_template_ids=[str(i) for i in data.form_template_ids],
+    )
+    db.add(packet)
+    await db.flush()
+    return packet
+
+
+async def update_form_packet(db: AsyncSession, packet: FormPacket, data: FormPacketUpdate) -> FormPacket:
+    if not data.name.strip():
+        raise ValueError("Name is required")
+    await _validate_packet_forms(db, packet.practice_id, packet.location_id, data.form_template_ids)
+    packet.name = data.name.strip()
+    packet.form_template_ids = [str(i) for i in data.form_template_ids]
+    await db.flush()
+    return packet
+
+
+async def delete_form_packet(db: AsyncSession, packet: FormPacket) -> None:
+    await db.delete(packet)
+    await db.flush()
+
+
+async def enable_packet_public_access(db: AsyncSession, packet: FormPacket) -> FormPacket:
+    """Idempotent: returns the packet's existing public code, generating one on first use."""
+    if packet.public_code:
+        return packet
+    for _ in range(5):
+        candidate = security.generate_opaque_token()[:11]
+        existing = await db.execute(select(FormPacket.id).where(FormPacket.public_code == candidate))
+        if existing.scalar_one_or_none() is None:
+            packet.public_code = candidate
+            break
+    await db.flush()
+    return packet
+
+
+async def list_public_packet_submissions(db: AsyncSession, ctx: StaffContext) -> list[dict]:
+    result = await db.execute(
+        select(PublicPacketSubmission, FormPacket)
+        .join(FormPacket, FormPacket.id == PublicPacketSubmission.form_packet_id)
+        .where(
+            PublicPacketSubmission.practice_id == ctx.practice_id,
+            PublicPacketSubmission.location_id == ctx.location_id,
+            PublicPacketSubmission.assigned_patient_id.is_(None),
+        )
+        .order_by(PublicPacketSubmission.created_at.desc())
+    )
+    out: list[dict] = []
+    for sub, packet in result.all():
+        out.append(
+            {
+                "id": sub.id,
+                "form_packet_id": sub.form_packet_id,
+                "packet_name": packet.name,
+                "first_name": sub.first_name,
+                "last_name": sub.last_name,
+                "dob": sub.dob,
+                "phone": sub.phone,
+                "email": sub.email,
+                "form_names": [s.get("form_name", "") for s in sub.submissions],
+                "created_at": sub.created_at,
+            }
+        )
+    return out
+
+
+async def assign_public_packet_submission(
+    db: AsyncSession, ctx: StaffContext, submission_id: uuid.UUID, patient_id: uuid.UUID
+) -> None:
+    sub = await db.get(PublicPacketSubmission, submission_id)
+    if sub is None or sub.practice_id != ctx.practice_id or sub.location_id != ctx.location_id:
+        raise ValueError("Submission not found")
+    if sub.assigned_patient_id is not None:
+        raise ValueError("This submission has already been assigned")
+
+    patient = await db.get(Patient, patient_id)
+    if patient is None or patient.practice_id != ctx.practice_id or patient.location_id != ctx.location_id:
+        raise ValueError("Patient not found")
+
+    names: list[str] = []
+    for entry in sub.submissions:
+        template_id = entry.get("template_id")
+        form_name = entry.get("form_name", "")
+        answers = entry.get("answers", {})
+        req = FormRequest(
+            practice_id=ctx.practice_id,
+            location_id=ctx.location_id,
+            patient_id=patient.id,
+            form_template_id=uuid.UUID(template_id),
+            status=FormRequestStatus.COMPLETED,
+            sent_at=sub.created_at,
+            expires_at=sub.created_at,
+            sync_status="synced",
+            synced_at=_now(),
+        )
+        db.add(req)
+        await db.flush()
+        db.add(
+            FormSubmission(
+                form_request_id=req.id,
+                patient_id=patient.id,
+                form_name=form_name,
+                device="web",
+                sync_status="complete",
+                answers=answers,
+                submitted_at=sub.created_at,
+            )
+        )
+        names.append(form_name)
+
+    sub.assigned_patient_id = patient.id
+    sub.synced_at = _now()
+
+    await _log_activity(
+        db,
+        patient_id=patient.id,
+        activity_type=ActivityType.FORM,
+        title=f"Form{'s' if len(names) != 1 else ''} synced from public packet link — {', '.join(names)}",
+    )
+    await db.flush()
 
 
 async def list_form_submissions(
@@ -324,27 +979,382 @@ async def list_form_submissions(
     return list(result.all())
 
 
+async def list_frequent_form_templates(
+    db: AsyncSession, ctx: StaffContext, *, limit: int = 3
+) -> list[FormTemplate]:
+    result = await db.execute(
+        select(FormTemplate)
+        .join(FormRequest, FormRequest.form_template_id == FormTemplate.id)
+        .where(
+            FormTemplate.practice_id == ctx.practice_id,
+            FormTemplate.location_id == ctx.location_id,
+            FormTemplate.archived_at.is_(None),
+        )
+        .group_by(FormTemplate.id)
+        .order_by(func.count(FormRequest.id).desc())
+        .limit(limit)
+    )
+    return list(result.scalars().all())
+
+
 async def send_form(
     db: AsyncSession, ctx: StaffContext, data: SendFormRequest
-) -> FormRequest:
-    tpl = await db.get(FormTemplate, data.form_template_id)
-    if tpl is None or tpl.practice_id != ctx.practice_id:
-        raise ValueError("Form template not found")
-    req = FormRequest(
-        practice_id=ctx.practice_id,
-        location_id=ctx.location_id,
-        patient_id=data.patient_id,
-        form_template_id=data.form_template_id,
+) -> list[FormRequest]:
+    patient = await db.get(Patient, data.patient_id)
+    if patient is None or patient.practice_id != ctx.practice_id:
+        raise ValueError("Patient not found")
+
+    result = await db.execute(
+        select(FormTemplate).where(
+            FormTemplate.id.in_(data.form_template_ids),
+            FormTemplate.practice_id == ctx.practice_id,
+            FormTemplate.location_id == ctx.location_id,
+        )
     )
-    db.add(req)
+    templates = result.scalars().all()
+    if len(templates) != len(set(data.form_template_ids)):
+        raise ValueError("Some forms could not be found")
+    archived = [t.name for t in templates if t.archived_at is not None]
+    if archived:
+        raise ValueError(f"Cannot send an archived form: {', '.join(archived)}")
+
+    now = _now()
+    if data.expires_at is not None:
+        expires_at = data.expires_at
+    else:
+        location = await db.get(Location, ctx.location_id)
+        amount = location.form_expiration_amount if location else 7
+        unit = location.form_expiration_unit if location else "days"
+        expires_at = _compute_expires_at(amount, unit, now)
+    if expires_at <= now:
+        raise ValueError("Expiration date must be in the future")
+
+    requests: list[FormRequest] = []
+    for tpl in templates:
+        req = FormRequest(
+            practice_id=ctx.practice_id,
+            location_id=ctx.location_id,
+            patient_id=data.patient_id,
+            form_template_id=tpl.id,
+            expires_at=expires_at,
+        )
+        db.add(req)
+        requests.append(req)
     await db.flush()
+
+    raw_token = await create_form_access_token(
+        db, practice_id=ctx.practice_id, location_id=ctx.location_id, patient_id=data.patient_id, expires_at=expires_at
+    )
+    link = f"{settings.frontend_url}/forms/{raw_token}"
+
+    names = ", ".join(t.name for t in templates)
+    text = data.message.strip() if data.message and data.message.strip() else f"Please fill out the following form(s): {names}"
+    body = f"{text}\n{link}"
+    await send_message(db, ctx, SendMessageRequest(patient_id=data.patient_id, body=body, channel="sms"))
+    if data.email_note and data.email_note.strip():
+        await send_message(
+            db, ctx, SendMessageRequest(patient_id=data.patient_id, body=f"{data.email_note.strip()}\n{link}", channel="email")
+        )
+
     await _log_activity(
         db,
         patient_id=data.patient_id,
         activity_type=ActivityType.FORM,
-        title=f"Form sent — {tpl.name}",
+        title=f"Form{'s' if len(templates) != 1 else ''} sent — {names}",
     )
-    return req
+    return requests
+
+
+async def evaluate_automatic_form_requests(
+    db: AsyncSession, ctx: StaffContext, appointment: Appointment
+) -> None:
+    result = await db.execute(
+        select(FormTemplate).where(
+            FormTemplate.practice_id == ctx.practice_id,
+            FormTemplate.location_id == ctx.location_id,
+            FormTemplate.archived_at.is_(None),
+            FormTemplate.send_automatically.is_(True),
+        )
+    )
+    templates = result.scalars().all()
+    if not templates:
+        return
+
+    patient = await db.get(Patient, appointment.patient_id)
+    if patient is None:
+        return
+
+    prior_result = await db.execute(
+        select(func.count()).select_from(Appointment).where(
+            Appointment.patient_id == appointment.patient_id,
+            Appointment.id != appointment.id,
+            Appointment.status != AppointmentStatus.CANCELLED,
+        )
+    )
+    patient_status = "existing" if prior_result.scalar_one() > 0 else "new"
+
+    now = _now()
+    age_years: int | None = None
+    if patient.dob is not None:
+        today = now.date()
+        age_years = today.year - patient.dob.year - (
+            (today.month, today.day) < (patient.dob.month, patient.dob.day)
+        )
+
+    type_result = await db.execute(
+        select(AppointmentTypeDef.id).where(
+            AppointmentTypeDef.practice_id == ctx.practice_id,
+            AppointmentTypeDef.location_id == ctx.location_id,
+            AppointmentTypeDef.name == appointment.appointment_type,
+        )
+    )
+    matching_type_ids = {str(i) for i in type_result.scalars().all()}
+
+    matched: list[FormTemplate] = []
+    for tpl in templates:
+        if tpl.rule_patient_status != "any" and tpl.rule_patient_status != patient_status:
+            continue
+        if tpl.rule_min_age is not None and (age_years is None or age_years < tpl.rule_min_age):
+            continue
+        if tpl.rule_max_age is not None and (age_years is None or age_years > tpl.rule_max_age):
+            continue
+        if tpl.rule_appointment_type_ids and not matching_type_ids & set(tpl.rule_appointment_type_ids):
+            continue
+        matched.append(tpl)
+    if not matched:
+        return
+
+    filtered: list[FormTemplate] = []
+    for tpl in matched:
+        last_sent_result = await db.execute(
+            select(func.max(FormRequest.sent_at)).where(
+                FormRequest.patient_id == appointment.patient_id,
+                FormRequest.form_template_id == tpl.id,
+                FormRequest.archived_at.is_(None),
+            )
+        )
+        last_sent = last_sent_result.scalar_one_or_none()
+        if last_sent is not None:
+            if tpl.rule_frequency_months:
+                if last_sent + timedelta(days=30 * tpl.rule_frequency_months) > now:
+                    continue
+            elif last_sent.date() == now.date():
+                continue
+        filtered.append(tpl)
+    if not filtered:
+        return
+
+    location = await db.get(Location, ctx.location_id)
+    amount = location.form_expiration_amount if location else 7
+    unit = location.form_expiration_unit if location else "days"
+    expires_at = _compute_expires_at(amount, unit, now)
+
+    for tpl in filtered:
+        db.add(
+            FormRequest(
+                practice_id=ctx.practice_id,
+                location_id=ctx.location_id,
+                patient_id=appointment.patient_id,
+                form_template_id=tpl.id,
+                expires_at=expires_at,
+            )
+        )
+    await db.flush()
+
+    raw_token = await create_form_access_token(
+        db, practice_id=ctx.practice_id, location_id=ctx.location_id, patient_id=appointment.patient_id, expires_at=expires_at
+    )
+    link = f"{settings.frontend_url}/forms/{raw_token}"
+
+    names = ", ".join(t.name for t in filtered)
+    body = f"Please fill out the following form(s): {names}\n{link}"
+    await send_message(
+        db, ctx, SendMessageRequest(patient_id=appointment.patient_id, body=body, channel="sms")
+    )
+    await _log_activity(
+        db,
+        patient_id=appointment.patient_id,
+        activity_type=ActivityType.FORM,
+        title=f"Form{'s' if len(filtered) != 1 else ''} sent automatically — {names}",
+    )
+
+
+async def list_form_request_batches(db: AsyncSession, ctx: StaffContext, *, tab: str) -> list[dict]:
+    result = await db.execute(
+        select(FormRequest, FormTemplate, Patient)
+        .join(FormTemplate, FormTemplate.id == FormRequest.form_template_id)
+        .join(Patient, Patient.id == FormRequest.patient_id)
+        .where(
+            FormRequest.practice_id == ctx.practice_id,
+            FormRequest.location_id == ctx.location_id,
+            FormRequest.archived_at.is_(None),
+        )
+        .order_by(FormRequest.sent_at.desc())
+    )
+    rows = result.all()
+
+    now = _now()
+    batches: dict[tuple, dict] = {}
+    order: list[tuple] = []
+    for req, tpl, patient in rows:
+        key = (req.patient_id, req.sent_at)
+        if key not in batches:
+            batches[key] = {
+                "patient_id": req.patient_id,
+                "patient_name": f"{patient.first_name} {patient.last_name}".strip(),
+                "patient_initials": f"{patient.first_name[:1]}{patient.last_name[:1]}".upper(),
+                "request_ids": [],
+                "sent_at": req.sent_at,
+                "expires_at": req.expires_at,
+                "forms": [],
+                "statuses": [],
+                "viewed_flags": [],
+                "sync_statuses": [],
+            }
+            order.append(key)
+        b = batches[key]
+        b["request_ids"].append(req.id)
+        b["forms"].append({"id": tpl.id, "name": tpl.name})
+        b["statuses"].append(req.status)
+        b["viewed_flags"].append(req.viewed_at is not None)
+        b["sync_statuses"].append(req.sync_status)
+        if req.expires_at > b["expires_at"]:
+            b["expires_at"] = req.expires_at
+
+    out: list[dict] = []
+    for key in order:
+        b = batches[key]
+        statuses = b.pop("statuses")
+        viewed_flags = b.pop("viewed_flags")
+        sync_statuses = b.pop("sync_statuses")
+
+        completed_count = sum(1 for s in statuses if s == FormRequestStatus.COMPLETED)
+        all_completed = completed_count == len(statuses)
+        all_synced = all_completed and all(s == "synced" for s in sync_statuses)
+
+        if all_synced:
+            status = "synced"
+        elif not all_completed and now > b["expires_at"] + timedelta(hours=FORM_REQUEST_EXPIRY_GRACE_HOURS):
+            status = "expired"
+        else:
+            status = "active"
+        if tab != "all" and status != tab:
+            continue
+
+        if all_completed:
+            completed_status = "complete"
+        elif completed_count > 0:
+            completed_status = "in_progress"
+        elif any(viewed_flags):
+            completed_status = "viewed"
+        else:
+            completed_status = "sent"
+
+        sync_status: str | None = None
+        if all_completed and not all_synced:
+            sync_status = "sync-failed" if any(s == "failed" for s in sync_statuses) else "sync-now"
+
+        b["status"] = status
+        b["completed_status"] = completed_status
+        b["sync_status"] = sync_status
+        out.append(b)
+    return out
+
+
+async def reactivate_form_requests(
+    db: AsyncSession, ctx: StaffContext, request_ids: list[uuid.UUID], expires_at: datetime
+) -> None:
+    now = _now()
+    if expires_at <= now:
+        raise ValueError("Due date must be in the future")
+    result = await db.execute(
+        select(FormRequest).where(
+            FormRequest.id.in_(request_ids),
+            FormRequest.practice_id == ctx.practice_id,
+            FormRequest.location_id == ctx.location_id,
+        )
+    )
+    requests = result.scalars().all()
+    if len(requests) != len(set(request_ids)):
+        raise ValueError("Some form requests could not be found")
+    for req in requests:
+        req.expires_at = expires_at
+        req.status = FormRequestStatus.SENT
+    await db.flush()
+
+
+async def archive_form_requests(db: AsyncSession, ctx: StaffContext, request_ids: list[uuid.UUID]) -> None:
+    result = await db.execute(
+        select(FormRequest).where(
+            FormRequest.id.in_(request_ids),
+            FormRequest.practice_id == ctx.practice_id,
+            FormRequest.location_id == ctx.location_id,
+        )
+    )
+    requests = result.scalars().all()
+    if len(requests) != len(set(request_ids)):
+        raise ValueError("Some form requests could not be found")
+    now = _now()
+    for req in requests:
+        req.archived_at = now
+    await db.flush()
+
+
+async def sync_form_requests(db: AsyncSession, ctx: StaffContext, request_ids: list[uuid.UUID]) -> None:
+    result = await db.execute(
+        select(FormRequest).where(
+            FormRequest.id.in_(request_ids),
+            FormRequest.practice_id == ctx.practice_id,
+            FormRequest.location_id == ctx.location_id,
+        )
+    )
+    requests = result.scalars().all()
+    if len(requests) != len(set(request_ids)):
+        raise ValueError("Some form requests could not be found")
+    now = _now()
+    for req in requests:
+        if req.status != FormRequestStatus.COMPLETED:
+            continue
+        patient = await db.get(Patient, req.patient_id)
+        if patient is not None and patient.archived:
+            req.sync_status = "failed"
+            continue
+        req.sync_status = "synced"
+        req.synced_at = now
+    await db.flush()
+
+
+async def mark_synced_form_requests(db: AsyncSession, ctx: StaffContext, request_ids: list[uuid.UUID]) -> None:
+    result = await db.execute(
+        select(FormRequest).where(
+            FormRequest.id.in_(request_ids),
+            FormRequest.practice_id == ctx.practice_id,
+            FormRequest.location_id == ctx.location_id,
+        )
+    )
+    requests = result.scalars().all()
+    if len(requests) != len(set(request_ids)):
+        raise ValueError("Some form requests could not be found")
+    now = _now()
+    for req in requests:
+        req.sync_status = "synced"
+        req.synced_at = now
+    await db.flush()
+
+
+async def get_form_request_submissions(
+    db: AsyncSession, ctx: StaffContext, request_ids: list[uuid.UUID]
+) -> list[FormSubmission]:
+    result = await db.execute(
+        select(FormSubmission)
+        .join(FormRequest, FormRequest.id == FormSubmission.form_request_id)
+        .where(
+            FormSubmission.form_request_id.in_(request_ids),
+            FormRequest.practice_id == ctx.practice_id,
+            FormRequest.location_id == ctx.location_id,
+        )
+    )
+    return list(result.scalars().all())
 
 
 # ── Messages ─────────────────────────────────────────────────────────────────

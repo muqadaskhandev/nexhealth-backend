@@ -17,6 +17,7 @@ from app.schemas.staff import (
     AppointmentOut,
     AppointmentUpdate,
     DashboardStats,
+    LocationActivityOut,
     FormSubmissionOut,
     CopyFormTemplatesRequest,
     FormPacketCreate,
@@ -97,6 +98,30 @@ def _appt_out(appt, patient) -> AppointmentOut:
 @router.get("/api/dashboard/stats", response_model=DashboardStats)
 async def stats(ctx: StaffContext = Depends(get_staff_context), db: AsyncSession = Depends(get_db)):
     return DashboardStats(**await staff_service.dashboard_stats(db, ctx))
+
+
+@router.get("/api/activity", response_model=list[LocationActivityOut])
+async def location_activity(
+    limit: int = 75,
+    ctx: StaffContext = Depends(get_staff_context),
+    db: AsyncSession = Depends(get_db),
+):
+    """Recent activity for patients at the active location."""
+    rows = await staff_service.list_location_activity(db, ctx, limit=min(max(limit, 1), 200))
+    return [
+        LocationActivityOut(
+            id=activity.id,
+            patient_id=patient.id,
+            patient_name=f"{patient.first_name} {patient.last_name}".strip(),
+            activity_type=activity.activity_type.value
+            if hasattr(activity.activity_type, "value")
+            else str(activity.activity_type),
+            title=activity.title,
+            body=activity.body or "",
+            created_at=activity.created_at,
+        )
+        for activity, patient in rows
+    ]
 
 
 # ── Patients ─────────────────────────────────────────────────────────────────

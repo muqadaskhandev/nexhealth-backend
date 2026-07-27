@@ -76,6 +76,18 @@ class ActivityOut(BaseModel):
     created_at: datetime
 
 
+class LocationActivityOut(BaseModel):
+    """Practice-wide activity feed row (location-scoped)."""
+
+    id: uuid.UUID
+    patient_id: uuid.UUID
+    patient_name: str
+    activity_type: str
+    title: str
+    body: str
+    created_at: datetime
+
+
 class AppointmentOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

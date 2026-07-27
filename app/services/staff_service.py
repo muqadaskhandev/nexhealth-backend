@@ -249,6 +249,26 @@ async def list_patient_activity(
     return list(result.scalars().all())
 
 
+async def list_location_activity(
+    db: AsyncSession,
+    ctx: StaffContext,
+    *,
+    limit: int = 75,
+) -> list[tuple[PatientActivity, Patient]]:
+    """Recent patient activity at the active location."""
+    result = await db.execute(
+        select(PatientActivity, Patient)
+        .join(Patient, Patient.id == PatientActivity.patient_id)
+        .where(
+            Patient.practice_id == ctx.practice_id,
+            Patient.location_id == ctx.location_id,
+        )
+        .order_by(PatientActivity.created_at.desc())
+        .limit(limit)
+    )
+    return list(result.all())
+
+
 # ── Appointments ─────────────────────────────────────────────────────────────
 async def list_appointments(
     db: AsyncSession,

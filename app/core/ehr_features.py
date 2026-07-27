@@ -29,8 +29,8 @@ EHR_FEATURES: list[EhrFeatureOut] = [
     EhrFeatureOut(
         id="form_sync",
         label="Form sync to EHR",
-        description="Push completed patient forms into the patient chart in your health record system.",
-        status="coming_soon",
+        description="Push completed patient forms into the patient chart in your health record system (Open Dental Documents / notes). Requires EHR sync enabled, credentials, and an EHR-linked patient.",
+        status="available",
     ),
     EhrFeatureOut(
         id="waitlist_recall",

@@ -80,17 +80,10 @@ async def mark_viewed(db: AsyncSession, patient_id: uuid.UUID) -> None:
 
 
 async def apply_sync_outcome(db: AsyncSession, req: FormRequest, patient: Patient) -> None:
-    """Called right after a FormRequest is marked COMPLETED to resolve its sync status."""
-    if patient.archived:
-        req.sync_status = "failed"
-        return
-    location = await db.get(Location, req.location_id)
-    sync_mode = location.form_sync_mode if location else "automatic"
-    if sync_mode == "manual":
-        req.sync_status = "pending"
-        return
-    req.sync_status = "synced"
-    req.synced_at = _now()
+    """Resolve chart sync after a form is completed (real EHR push when possible)."""
+    from app.services.form_ehr_sync_service import apply_form_sync_outcome
+
+    await apply_form_sync_outcome(db, req, patient, force=False)
 
 
 async def verify_patient(db: AsyncSession, token: FormAccessToken, last_name: str, dob) -> Patient | None:
@@ -217,7 +210,6 @@ async def submit_form(
 
     tpl = await db.get(FormTemplate, req.form_template_id)
     req.status = FormRequestStatus.COMPLETED
-    await apply_sync_outcome(db, req, patient)
 
     db.add(
         FormSubmission(
@@ -229,6 +221,9 @@ async def submit_form(
             answers=answers,
         )
     )
+    await db.flush()
+    await apply_sync_outcome(db, req, patient)
+
     await _log_activity(
         db,
         patient_id=patient.id,

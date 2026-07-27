@@ -26,6 +26,23 @@ class EhrPatientRecord:
     address: str = ""
 
 
+@dataclass(frozen=True)
+class FormChartPayload:
+    """Completed form content to attach to the patient chart in the EHR."""
+
+    form_name: str
+    answers: dict[str, Any]
+    submitted_at_iso: str = ""
+    patient_name: str = ""
+
+
+@dataclass(frozen=True)
+class FormPushResult:
+    ok: bool
+    message: str
+    external_id: str = ""
+
+
 class EhrAdapter(Protocol):
     ehr_system: EhrSystem
 
@@ -48,4 +65,14 @@ class EhrAdapter(Protocol):
         ehr_site_id: str,
         limit: int = 50,
     ) -> list[EhrPatientRecord]:
+        ...
+
+    async def push_form_to_chart(
+        self,
+        credentials: dict[str, Any],
+        connection_mode: str,
+        *,
+        ehr_patient_id: str,
+        payload: FormChartPayload,
+    ) -> FormPushResult:
         ...

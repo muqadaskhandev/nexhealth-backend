@@ -31,6 +31,17 @@ def _normalize_name(value: str) -> str:
     return value.strip().lower()
 
 
+def _is_valid_number(value: object) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    try:
+        float(text)
+        return True
+    except ValueError:
+        return False
+
+
 def _levenshtein(a: str, b: str) -> int:
     if a == b:
         return 0
@@ -498,6 +509,10 @@ async def book_appointment(
         if field.field_type == BookingFieldType.PAYMENT:
             if not isinstance(answer, dict) or not answer.get("authorized"):
                 raise ValueError(f"Please complete: {field.label}")
+            continue
+        if field.field_type == BookingFieldType.NUMBER:
+            if not _is_valid_number(answer):
+                raise ValueError(f"Please enter a valid number for: {field.label}")
             continue
         if not str(answer or "").strip():
             raise ValueError(f"Please complete: {field.label}")

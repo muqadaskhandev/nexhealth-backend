@@ -657,7 +657,8 @@ async def search_asap(
     )
     rows = result.all()
 
-    has_future = await _patients_with_future_appointments(db, ctx)
+    # ASAP patients already have a future appointment (that's the ASAP list).
+    # Unlike missed/continuing-care, do not exclude them for having upcoming visits.
     recent_ids = await _recently_notified_patients(db, ctx, exclude_recent_days)
 
     provider = None
@@ -669,12 +670,12 @@ async def search_asap(
     for appt, patient in rows:
         if not (appt.meta or {}).get("asap"):
             continue
-        if patient.id in has_future or patient.id in recent_ids or patient.id in seen:
+        if patient.id in recent_ids or patient.id in seen:
             continue
         if provider is not None and appt.provider_name != provider.name:
             continue
         if operatory_id is not None:
-            op_name = appt.meta.get("operatory", "")
+            op_name = (appt.meta or {}).get("operatory", "")
             operatory = await providers_service.get_operatory(db, ctx, operatory_id)
             if operatory is not None and op_name and op_name != operatory.name:
                 continue

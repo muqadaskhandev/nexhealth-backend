@@ -1072,6 +1072,7 @@ async def assign_public_packet_submission(
         raise ValueError("Patient not found")
 
     names: list[str] = []
+    request_ids: list[uuid.UUID] = []
     for entry in sub.submissions:
         template_id = entry.get("template_id")
         form_name = entry.get("form_name", "")
@@ -1084,8 +1085,7 @@ async def assign_public_packet_submission(
             status=FormRequestStatus.COMPLETED,
             sent_at=sub.created_at,
             expires_at=sub.created_at,
-            sync_status="synced",
-            synced_at=_now(),
+            sync_status="pending",
         )
         db.add(req)
         await db.flush()
@@ -1101,15 +1101,30 @@ async def assign_public_packet_submission(
             )
         )
         names.append(form_name)
+        request_ids.append(req.id)
 
     sub.assigned_patient_id = patient.id
-    sub.synced_at = _now()
+    await db.flush()
+
+    from app.services.form_ehr_sync_service import apply_form_sync_outcome
+
+    all_synced = True
+    for req_id in request_ids:
+        req = await db.get(FormRequest, req_id)
+        if req is None:
+            continue
+        status = await apply_form_sync_outcome(db, req, patient, force=True)
+        if status != "synced":
+            all_synced = False
+
+    if all_synced:
+        sub.synced_at = _now()
 
     await _log_activity(
         db,
         patient_id=patient.id,
         activity_type=ActivityType.FORM,
-        title=f"Form{'s' if len(names) != 1 else ''} synced from public packet link — {', '.join(names)}",
+        title=f"Form{'s' if len(names) != 1 else ''} assigned from public packet — {', '.join(names)}",
     )
     await db.flush()
 
@@ -1547,6 +1562,8 @@ async def archive_form_requests(db: AsyncSession, ctx: StaffContext, request_ids
 
 
 async def sync_form_requests(db: AsyncSession, ctx: StaffContext, request_ids: list[uuid.UUID]) -> None:
+    from app.services.form_ehr_sync_service import apply_form_sync_outcome
+
     result = await db.execute(
         select(FormRequest).where(
             FormRequest.id.in_(request_ids),
@@ -1557,16 +1574,14 @@ async def sync_form_requests(db: AsyncSession, ctx: StaffContext, request_ids: l
     requests = result.scalars().all()
     if len(requests) != len(set(request_ids)):
         raise ValueError("Some form requests could not be found")
-    now = _now()
     for req in requests:
         if req.status != FormRequestStatus.COMPLETED:
             continue
         patient = await db.get(Patient, req.patient_id)
-        if patient is not None and patient.archived:
+        if patient is None:
             req.sync_status = "failed"
             continue
-        req.sync_status = "synced"
-        req.synced_at = now
+        await apply_form_sync_outcome(db, req, patient, force=True)
     await db.flush()
 
 
@@ -1585,6 +1600,13 @@ async def mark_synced_form_requests(db: AsyncSession, ctx: StaffContext, request
     for req in requests:
         req.sync_status = "synced"
         req.synced_at = now
+        await _log_activity(
+            db,
+            patient_id=req.patient_id,
+            activity_type=ActivityType.FORM,
+            title="Form marked as synced outside NexHealth",
+            meta={"form_request_id": str(req.id), "manual_mark": True},
+        )
     await db.flush()
 
 

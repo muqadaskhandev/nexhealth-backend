@@ -49,6 +49,57 @@ async def http_get_json(
         return status, None
 
 
+async def http_post_json(
+    url: str,
+    *,
+    json_body: dict[str, Any],
+    headers: dict[str, str] | None = None,
+    timeout: float = 30.0,
+) -> tuple[int, Any, str]:
+    """POST JSON; returns (status, parsed_json_or_None, raw_text)."""
+    import json
+
+    hdrs = {"Content-Type": "application/json", **(headers or {})}
+    try:
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+            resp = await client.post(url, headers=hdrs, json=json_body)
+        text = resp.text
+        parsed: Any = None
+        if text:
+            try:
+                parsed = json.loads(text)
+            except ValueError:
+                parsed = None
+        return resp.status_code, parsed, text
+    except httpx.HTTPError as exc:
+        return 0, None, str(exc)
+
+
+async def http_put_json(
+    url: str,
+    *,
+    json_body: dict[str, Any],
+    headers: dict[str, str] | None = None,
+    timeout: float = 30.0,
+) -> tuple[int, Any, str]:
+    import json
+
+    hdrs = {"Content-Type": "application/json", **(headers or {})}
+    try:
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+            resp = await client.put(url, headers=hdrs, json=json_body)
+        text = resp.text
+        parsed: Any = None
+        if text:
+            try:
+                parsed = json.loads(text)
+            except ValueError:
+                parsed = None
+        return resp.status_code, parsed, text
+    except httpx.HTTPError as exc:
+        return 0, None, str(exc)
+
+
 def _parse_date(value: Any) -> date | None:
     if not value:
         return None

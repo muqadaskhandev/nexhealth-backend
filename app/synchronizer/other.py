@@ -5,9 +5,9 @@ from typing import Any
 from urllib.parse import urlencode
 
 from app.models.practice import EhrSystem
-from app.synchronizer._helpers import require_fields
+from app.synchronizer._helpers import form_push_unsupported, require_fields
 from app.synchronizer.fetch import http_get_json, http_ping, parse_generic_patients
-from app.synchronizer.types import ConnectionTestResult, EhrPatientRecord
+from app.synchronizer.types import ConnectionTestResult, EhrPatientRecord, FormChartPayload, FormPushResult
 
 
 class OtherEhrAdapter:
@@ -69,3 +69,13 @@ class OtherEhrAdapter:
             raise ValueError(f"EHR patient fetch failed (HTTP {status})")
         patients = parse_generic_patients(payload)
         return [p for p in patients if p.first_name or p.last_name][:limit]
+
+    async def push_form_to_chart(
+        self,
+        credentials: dict[str, Any],
+        connection_mode: str,
+        *,
+        ehr_patient_id: str,
+        payload: FormChartPayload,
+    ) -> FormPushResult:
+        return form_push_unsupported("this EHR")

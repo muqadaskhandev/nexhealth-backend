@@ -29,6 +29,7 @@ class PracticeOut(BaseModel):
     state: str
     zip_code: str
     phone: str
+    booking_redirect_url: str = ""
     subscription_plan: SubscriptionPlan
     enabled_products: dict[str, Any]
     ehr_system: EhrSystem
@@ -74,6 +75,7 @@ class PracticeUpdate(BaseModel):
     state: str | None = None
     zip_code: str | None = None
     phone: str | None = None
+    booking_redirect_url: str | None = None
     enabled_products: EnabledProducts | None = None
 
 

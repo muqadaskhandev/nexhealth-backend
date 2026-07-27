@@ -27,6 +27,7 @@ def _practice_out(practice) -> PracticeOut:
         state=practice.state,
         zip_code=practice.zip_code,
         phone=practice.phone,
+        booking_redirect_url=practice.booking_redirect_url or "",
         subscription_plan=practice.subscription_plan,
         enabled_products=practice.enabled_products,
         ehr_system=practice.ehr_system,

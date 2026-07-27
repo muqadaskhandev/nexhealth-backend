@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.staff_context import StaffContext, get_staff_context
@@ -11,13 +11,21 @@ from app.database import get_db
 from app.schemas.appointment_types import (
     AppointmentTypeCreate,
     AppointmentTypeOut,
+    AppointmentTypeReorder,
     AppointmentTypeUpdate,
+    BulkPatientTypeUpdate,
+    BulkPatientTypeUpdateOut,
+    CopyAppointmentTypesOut,
+    CopyAppointmentTypesRequest,
+    CopyMappingRulesOut,
+    CopyMappingRulesRequest,
+    MappingRetagOut,
     MappingRuleCreate,
     MappingRuleOut,
     MappingRuleReorder,
     MappingRuleUpdate,
 )
-from app.services import appointment_types_service
+from app.services import appointment_rules_service, appointment_types_service
 
 router = APIRouter(tags=["appointment-types"])
 
@@ -25,9 +33,17 @@ router = APIRouter(tags=["appointment-types"])
 # ── Appointment types ────────────────────────────────────────────────────────
 @router.get("/api/appointment-types", response_model=list[AppointmentTypeOut])
 async def list_appointment_types(
-    ctx: StaffContext = Depends(get_staff_context), db: AsyncSession = Depends(get_db)
+    location_id: uuid.UUID | None = Query(default=None),
+    ctx: StaffContext = Depends(get_staff_context),
+    db: AsyncSession = Depends(get_db),
 ):
-    rows = await appointment_types_service.list_appointment_types(db, ctx)
+    try:
+        if location_id is not None:
+            rows = await appointment_types_service.list_appointment_types_at_location(db, ctx, location_id)
+        else:
+            rows = await appointment_types_service.list_appointment_types(db, ctx)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
     return [AppointmentTypeOut.model_validate(r) for r in rows]
 
 
@@ -55,6 +71,52 @@ async def update_appointment_type(
     at = await appointment_types_service.update_appointment_type(db, at, payload)
     await db.commit()
     return AppointmentTypeOut.model_validate(at)
+
+
+@router.post("/api/appointment-types/reorder", response_model=list[AppointmentTypeOut])
+async def reorder_appointment_types(
+    payload: AppointmentTypeReorder,
+    ctx: StaffContext = Depends(get_staff_context),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        rows = await appointment_types_service.reorder_appointment_types(db, ctx, payload.ordered_ids)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+    await db.commit()
+    return [AppointmentTypeOut.model_validate(r) for r in rows]
+
+
+@router.post("/api/appointment-types/copy", response_model=CopyAppointmentTypesOut)
+async def copy_appointment_types(
+    payload: CopyAppointmentTypesRequest,
+    ctx: StaffContext = Depends(get_staff_context),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        copied = await appointment_types_service.copy_appointment_types(
+            db, ctx, payload.appointment_type_ids, payload.location_ids
+        )
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+    await db.commit()
+    return CopyAppointmentTypesOut(copied=copied)
+
+
+@router.post("/api/appointment-types/bulk-patient-type", response_model=BulkPatientTypeUpdateOut)
+async def bulk_update_patient_types(
+    payload: BulkPatientTypeUpdate,
+    ctx: StaffContext = Depends(get_staff_context),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        updated = await appointment_types_service.bulk_update_patient_types(
+            db, ctx, payload.location_id, payload.updates
+        )
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+    await db.commit()
+    return BulkPatientTypeUpdateOut(updated=updated)
 
 
 @router.delete("/api/appointment-types/{appointment_type_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -89,6 +151,9 @@ async def create_mapping_rule(
         rule = await appointment_types_service.create_mapping_rule(db, ctx, payload)
     except ValueError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+    await appointment_rules_service.retag_appointments_at_location(
+        db, practice_id=ctx.practice_id, location_id=ctx.location_id
+    )
     await db.commit()
     return MappingRuleOut.model_validate(rule)
 
@@ -107,6 +172,9 @@ async def update_mapping_rule(
         rule = await appointment_types_service.update_mapping_rule(db, ctx, rule, payload)
     except ValueError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+    await appointment_rules_service.retag_appointments_at_location(
+        db, practice_id=ctx.practice_id, location_id=ctx.location_id
+    )
     await db.commit()
     return MappingRuleOut.model_validate(rule)
 
@@ -124,6 +192,34 @@ async def delete_mapping_rule(
     await db.commit()
 
 
+@router.post("/api/mapping-rules/retag", response_model=MappingRetagOut)
+async def retag_appointments(
+    ctx: StaffContext = Depends(get_staff_context),
+    db: AsyncSession = Depends(get_db),
+):
+    updated = await appointment_rules_service.retag_appointments_at_location(
+        db, practice_id=ctx.practice_id, location_id=ctx.location_id
+    )
+    await db.commit()
+    return MappingRetagOut(updated=updated)
+
+
+@router.post("/api/mapping-rules/copy", response_model=CopyMappingRulesOut)
+async def copy_mapping_rules(
+    payload: CopyMappingRulesRequest,
+    ctx: StaffContext = Depends(get_staff_context),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        copied = await appointment_types_service.copy_mapping_rules(
+            db, ctx, payload.rule_ids, payload.location_ids
+        )
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+    await db.commit()
+    return CopyMappingRulesOut(copied=copied)
+
+
 @router.post("/api/mapping-rules/reorder", response_model=list[MappingRuleOut])
 async def reorder_mapping_rules(
     payload: MappingRuleReorder,
@@ -134,5 +230,8 @@ async def reorder_mapping_rules(
         rows = await appointment_types_service.reorder_mapping_rules(db, ctx, payload.ordered_ids)
     except ValueError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+    await appointment_rules_service.retag_appointments_at_location(
+        db, practice_id=ctx.practice_id, location_id=ctx.location_id
+    )
     await db.commit()
     return [MappingRuleOut.model_validate(r) for r in rows]

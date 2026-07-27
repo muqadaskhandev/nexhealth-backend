@@ -45,10 +45,12 @@ from app.schemas.staff import (
     SendMessageRequest,
     SyncFormRequestsRequest,
     VerifyInsuranceRequest,
+    AsapListCreate,
+    AsapListOut,
     WaitlistCreate,
     WaitlistOut,
 )
-from app.services import staff_service
+from app.services import asap_list_service, staff_service
 
 router = APIRouter(tags=["staff"])
 
@@ -76,11 +78,13 @@ def _appt_out(appt, patient) -> AppointmentOut:
         patient_id=appt.patient_id,
         provider_name=appt.provider_name,
         appointment_type=appt.appointment_type,
+        appointment_type_def_id=appt.appointment_type_def_id,
         starts_at=appt.starts_at,
         duration_minutes=appt.duration_minutes,
         status=appt.status.value,
         insurance_status=appt.insurance_status.value,
         forms_status=appt.forms_status.value,
+        meta=appt.meta or {},
         patient_name=f"{patient.first_name} {patient.last_name}",
         patient_initials=f"{patient.first_name[:1]}{patient.last_name[:1]}".upper(),
         patient_dob=patient.dob.isoformat() if patient.dob else None,
@@ -267,6 +271,76 @@ async def add_waitlist(
         patient_name=f"{patient.first_name} {patient.last_name}" if patient else "",
         created_at=entry.created_at,
     )
+
+
+@router.delete("/api/waitlist/{entry_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def remove_waitlist_entry(
+    entry_id: uuid.UUID,
+    ctx: StaffContext = Depends(get_staff_context),
+    db: AsyncSession = Depends(get_db),
+):
+    entry = await staff_service.remove_waitlist(db, ctx, entry_id)
+    if entry is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Waitlist entry not found")
+    await db.commit()
+
+
+@router.get("/api/asap-list", response_model=list[AsapListOut])
+async def list_asap(
+    ctx: StaffContext = Depends(get_staff_context), db: AsyncSession = Depends(get_db)
+):
+    rows = await asap_list_service.list_asap(db, ctx)
+    return [
+        AsapListOut(
+            id=appt.id,
+            patient_id=patient.id,
+            patient_name=f"{patient.first_name} {patient.last_name}".strip(),
+            provider_name=appt.provider_name,
+            appointment_type=appt.appointment_type,
+            starts_at=appt.starts_at,
+            duration_minutes=appt.duration_minutes,
+            notes=str((appt.meta or {}).get("asap_notes", "") or ""),
+            created_at=appt.created_at,
+        )
+        for appt, patient in rows
+    ]
+
+
+@router.post("/api/asap-list", response_model=AsapListOut, status_code=status.HTTP_201_CREATED)
+async def add_to_asap(
+    payload: AsapListCreate,
+    ctx: StaffContext = Depends(get_staff_context),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        appt = await asap_list_service.add_to_asap(db, ctx, payload)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+    patient = await staff_service.get_patient(db, ctx, appt.patient_id)
+    await db.commit()
+    return AsapListOut(
+        id=appt.id,
+        patient_id=appt.patient_id,
+        patient_name=f"{patient.first_name} {patient.last_name}".strip() if patient else "",
+        provider_name=appt.provider_name,
+        appointment_type=appt.appointment_type,
+        starts_at=appt.starts_at,
+        duration_minutes=appt.duration_minutes,
+        notes=str((appt.meta or {}).get("asap_notes", "") or ""),
+        created_at=appt.created_at,
+    )
+
+
+@router.delete("/api/asap-list/{appointment_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def remove_from_asap(
+    appointment_id: uuid.UUID,
+    ctx: StaffContext = Depends(get_staff_context),
+    db: AsyncSession = Depends(get_db),
+):
+    appt = await asap_list_service.remove_from_asap(db, ctx, appointment_id)
+    if appt is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="ASAP entry not found")
+    await db.commit()
 
 
 # ── Medical alerts ───────────────────────────────────────────────────────────

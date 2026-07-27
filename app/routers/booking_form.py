@@ -14,6 +14,7 @@ from app.schemas.booking_form import (
     BookingFormFieldReorder,
     BookingFormFieldUpdate,
     BookingInsuranceBulkCreate,
+    BookingInsuranceCopyToLocations,
     BookingInsuranceCreate,
     BookingInsuranceOut,
 )
@@ -112,7 +113,33 @@ async def bulk_create_insurances(
     ctx: StaffContext = Depends(get_staff_context),
     db: AsyncSession = Depends(get_db),
 ):
-    rows = await booking_form_service.bulk_create_insurances(db, ctx, payload.names)
+    rows = await booking_form_service.bulk_create_insurances(
+        db, ctx, payload.names, copy_to_all_locations=payload.copy_to_all_locations
+    )
+    await db.commit()
+    return [BookingInsuranceOut.model_validate(r) for r in rows]
+
+
+@router.post("/api/booking-insurances/copy")
+async def copy_insurances(
+    payload: BookingInsuranceCopyToLocations,
+    ctx: StaffContext = Depends(get_staff_context),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        copied = await booking_form_service.copy_insurances_to_locations(db, ctx, payload.location_ids)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+    await db.commit()
+    return {"copied": copied}
+
+
+@router.post("/api/booking-insurances/restore-defaults", response_model=list[BookingInsuranceOut])
+async def restore_default_insurances(
+    ctx: StaffContext = Depends(get_staff_context),
+    db: AsyncSession = Depends(get_db),
+):
+    rows = await booking_form_service.restore_default_insurances(db, ctx)
     await db.commit()
     return [BookingInsuranceOut.model_validate(r) for r in rows]
 

@@ -59,3 +59,16 @@ class SyncRunOut(BaseModel):
     patients_imported: int
     patients_updated: int
     sync_status: SyncStatus
+
+
+class EhrFeatureOut(BaseModel):
+    id: str
+    label: str
+    description: str
+    status: str = "coming_soon"
+
+
+class EhrFeaturesOut(BaseModel):
+    enabled: bool
+    message: str
+    features: list[EhrFeatureOut]

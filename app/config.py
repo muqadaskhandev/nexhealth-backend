@@ -105,6 +105,8 @@ class Settings(BaseSettings):
 
     # EHR Synchronizer — encrypt credentials at rest (Fernet key, base64 url-safe 32 bytes).
     ehr_credentials_key: str = ""
+    # Live EHR sync (patient import, insertion rules write, mapping read). Off until connectors ship.
+    ehr_sync_enabled: bool = False
     # Must be false in production — only real EHR APIs are called.
     ehr_sync_demo_mode: bool = False
 

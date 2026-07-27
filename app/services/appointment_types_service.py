@@ -11,9 +11,12 @@ from app.models.appointment_types import AppointmentTypeDef, InsertionRule, Mapp
 from app.schemas.appointment_types import (
     AppointmentTypeCreate,
     AppointmentTypeUpdate,
+    BulkPatientTypeUpdateItem,
+    InsertionRuleIn,
     MappingRuleCreate,
     MappingRuleUpdate,
 )
+from app.services import user_service
 
 
 async def list_appointment_types(db: AsyncSession, ctx: StaffContext) -> list[AppointmentTypeDef]:
@@ -23,11 +26,48 @@ async def list_appointment_types(db: AsyncSession, ctx: StaffContext) -> list[Ap
             AppointmentTypeDef.practice_id == ctx.practice_id,
             AppointmentTypeDef.location_id == ctx.location_id,
         )
-        .order_by(AppointmentTypeDef.name)
+        .order_by(AppointmentTypeDef.position, AppointmentTypeDef.name)
     )
     types = list(result.scalars().all())
     await _attach_rules(db, types)
     return types
+
+
+async def list_appointment_types_at_location(
+    db: AsyncSession, ctx: StaffContext, location_id: uuid.UUID
+) -> list[AppointmentTypeDef]:
+    if not await user_service.user_can_access_location(db, ctx.user.id, location_id):
+        raise ValueError("No access to location")
+    result = await db.execute(
+        select(AppointmentTypeDef)
+        .where(
+            AppointmentTypeDef.practice_id == ctx.practice_id,
+            AppointmentTypeDef.location_id == location_id,
+        )
+        .order_by(AppointmentTypeDef.position, AppointmentTypeDef.name)
+    )
+    types = list(result.scalars().all())
+    await _attach_rules(db, types)
+    return types
+
+
+async def bulk_update_patient_types(
+    db: AsyncSession,
+    ctx: StaffContext,
+    location_id: uuid.UUID,
+    updates: list[BulkPatientTypeUpdateItem],
+) -> int:
+    if not await user_service.user_can_access_location(db, ctx.user.id, location_id):
+        raise ValueError("No access to location")
+    updated = 0
+    for item in updates:
+        at = await db.get(AppointmentTypeDef, item.id)
+        if at is None or at.practice_id != ctx.practice_id or at.location_id != location_id:
+            raise ValueError(f"Appointment type not found: {item.id}")
+        at.patient_type = PatientTypeRule(item.patient_type)
+        updated += 1
+    await db.flush()
+    return updated
 
 
 async def _attach_rules(db: AsyncSession, types: list[AppointmentTypeDef]) -> None:
@@ -66,6 +106,16 @@ async def _replace_insertion_rules(
 async def create_appointment_type(
     db: AsyncSession, ctx: StaffContext, data: AppointmentTypeCreate
 ) -> AppointmentTypeDef:
+    result = await db.execute(
+        select(AppointmentTypeDef.position)
+        .where(
+            AppointmentTypeDef.practice_id == ctx.practice_id,
+            AppointmentTypeDef.location_id == ctx.location_id,
+        )
+        .order_by(AppointmentTypeDef.position.desc())
+        .limit(1)
+    )
+    max_position = result.scalar_one_or_none()
     at = AppointmentTypeDef(
         practice_id=ctx.practice_id,
         location_id=ctx.location_id,
@@ -74,6 +124,7 @@ async def create_appointment_type(
         available_online=data.available_online,
         patient_type=PatientTypeRule(data.patient_type),
         allow_patient_cancel=data.allow_patient_cancel,
+        position=(max_position + 1) if max_position is not None else 0,
     )
     db.add(at)
     await db.flush()
@@ -105,6 +156,22 @@ async def update_appointment_type(
 
 async def delete_appointment_type(db: AsyncSession, at: AppointmentTypeDef) -> None:
     await db.delete(at)
+
+
+async def reorder_appointment_types(
+    db: AsyncSession, ctx: StaffContext, ordered_ids: list[uuid.UUID]
+) -> list[AppointmentTypeDef]:
+    types = await list_appointment_types(db, ctx)
+    by_id = {t.id: t for t in types}
+    missing = [i for i in ordered_ids if i not in by_id]
+    if missing:
+        raise ValueError(f"Appointment type(s) not found: {', '.join(str(i) for i in missing)}")
+    if len(ordered_ids) != len(types):
+        raise ValueError("ordered_ids must include every appointment type for this location")
+    for position, type_id in enumerate(ordered_ids):
+        by_id[type_id].position = position
+    await db.flush()
+    return await list_appointment_types(db, ctx)
 
 
 # ── Mapping rules ──────────────────────────────────────────────────────────
@@ -165,6 +232,127 @@ async def update_mapping_rule(
 
 async def delete_mapping_rule(db: AsyncSession, rule: MappingRule) -> None:
     await db.delete(rule)
+
+
+async def copy_appointment_types(
+    db: AsyncSession, ctx: StaffContext, appointment_type_ids: list[uuid.UUID], location_ids: list[uuid.UUID]
+) -> int:
+    result = await db.execute(
+        select(AppointmentTypeDef).where(
+            AppointmentTypeDef.id.in_(appointment_type_ids),
+            AppointmentTypeDef.practice_id == ctx.practice_id,
+            AppointmentTypeDef.location_id == ctx.location_id,
+        )
+    )
+    sources = list(result.scalars().all())
+    if len(sources) != len(set(appointment_type_ids)):
+        raise ValueError("Some appointment types could not be found in your current location")
+
+    target_locations = [lid for lid in dict.fromkeys(location_ids) if lid != ctx.location_id]
+    if not target_locations:
+        raise ValueError("Select at least one other location to copy to")
+
+    copied = 0
+    for loc_id in target_locations:
+        for src in sources:
+            existing_result = await db.execute(
+                select(AppointmentTypeDef).where(
+                    AppointmentTypeDef.practice_id == ctx.practice_id,
+                    AppointmentTypeDef.location_id == loc_id,
+                    AppointmentTypeDef.name == src.name,
+                )
+            )
+            existing = existing_result.scalar_one_or_none()
+            if existing:
+                existing.duration_minutes = src.duration_minutes
+                existing.available_online = src.available_online
+                existing.patient_type = src.patient_type
+                existing.allow_patient_cancel = src.allow_patient_cancel
+                target = existing
+            else:
+                target = AppointmentTypeDef(
+                    practice_id=ctx.practice_id,
+                    location_id=loc_id,
+                    name=src.name,
+                    duration_minutes=src.duration_minutes,
+                    available_online=src.available_online,
+                    patient_type=src.patient_type,
+                    allow_patient_cancel=src.allow_patient_cancel,
+                )
+                db.add(target)
+                await db.flush()
+
+            rules_result = await db.execute(
+                select(InsertionRule).where(InsertionRule.appointment_type_id == src.id)
+            )
+            await _replace_insertion_rules(
+                db,
+                target.id,
+                [
+                    InsertionRuleIn(code_type=r.code_type, codes=r.codes)
+                    for r in rules_result.scalars().all()
+                ],
+            )
+            copied += 1
+    await db.flush()
+    return copied
+
+
+async def copy_mapping_rules(
+    db: AsyncSession, ctx: StaffContext, rule_ids: list[uuid.UUID], location_ids: list[uuid.UUID]
+) -> int:
+    result = await db.execute(
+        select(MappingRule).where(
+            MappingRule.id.in_(rule_ids),
+            MappingRule.practice_id == ctx.practice_id,
+            MappingRule.location_id == ctx.location_id,
+        )
+    )
+    sources = list(result.scalars().all())
+    if len(sources) != len(set(rule_ids)):
+        raise ValueError("Some mapping rules could not be found in your current location")
+
+    target_locations = [lid for lid in dict.fromkeys(location_ids) if lid != ctx.location_id]
+    if not target_locations:
+        raise ValueError("Select at least one other location to copy to")
+
+    copied = 0
+    for loc_id in target_locations:
+        for src in sources:
+            target_type = await get_appointment_type(db, ctx, src.target_appointment_type_id)
+            if target_type is None:
+                continue
+            dest_type_result = await db.execute(
+                select(AppointmentTypeDef).where(
+                    AppointmentTypeDef.practice_id == ctx.practice_id,
+                    AppointmentTypeDef.location_id == loc_id,
+                    AppointmentTypeDef.name == target_type.name,
+                )
+            )
+            dest_type = dest_type_result.scalar_one_or_none()
+            if dest_type is None:
+                continue
+
+            pos_result = await db.execute(
+                select(MappingRule.position)
+                .where(MappingRule.practice_id == ctx.practice_id, MappingRule.location_id == loc_id)
+                .order_by(MappingRule.position.desc())
+                .limit(1)
+            )
+            max_position = pos_result.scalar_one_or_none()
+
+            db.add(
+                MappingRule(
+                    practice_id=ctx.practice_id,
+                    location_id=loc_id,
+                    target_appointment_type_id=dest_type.id,
+                    conditions=src.conditions,
+                    position=(max_position + 1) if max_position is not None else 0,
+                )
+            )
+            copied += 1
+    await db.flush()
+    return copied
 
 
 async def reorder_mapping_rules(

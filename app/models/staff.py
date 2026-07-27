@@ -99,6 +99,7 @@ class Patient(Base):
     archived: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     insurance_data: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     notification_prefs: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    meta: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -118,6 +119,12 @@ class Appointment(Base):
     )
     provider_name: Mapped[str] = mapped_column(String(200), nullable=False)
     appointment_type: Mapped[str] = mapped_column(String(80), nullable=False, default="OP1")
+    appointment_type_def_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("appointment_type_defs.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     starts_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     duration_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
     status: Mapped[AppointmentStatus] = mapped_column(
@@ -135,6 +142,7 @@ class Appointment(Base):
         nullable=False,
         default=FormsStatus.INCOMPLETE,
     )
+    meta: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

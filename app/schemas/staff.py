@@ -8,6 +8,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
+from app.schemas.appointment_types import MappingFieldsIn
+
 
 class PatientOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -81,11 +83,13 @@ class AppointmentOut(BaseModel):
     patient_id: uuid.UUID
     provider_name: str
     appointment_type: str
+    appointment_type_def_id: uuid.UUID | None = None
     starts_at: datetime
     duration_minutes: int
     status: str
     insurance_status: str
     forms_status: str
+    meta: dict[str, Any] = Field(default_factory=dict)
     patient_name: str = ""
     patient_initials: str = ""
     patient_dob: str | None = None
@@ -97,6 +101,8 @@ class AppointmentCreate(BaseModel):
     patient_id: uuid.UUID
     provider_name: str
     appointment_type: str = "OP1"
+    appointment_type_id: uuid.UUID | None = None
+    mapping_fields: MappingFieldsIn | None = None
     starts_at: datetime
     duration_minutes: int = 30
     status: str = "unconfirmed"
@@ -127,6 +133,29 @@ class WaitlistCreate(BaseModel):
     patient_id: uuid.UUID
     provider_name: str = ""
     appointment_type: str = ""
+    notes: str = ""
+
+
+class AsapListOut(BaseModel):
+    id: uuid.UUID
+    patient_id: uuid.UUID
+    patient_name: str
+    provider_name: str
+    appointment_type: str
+    starts_at: datetime
+    duration_minutes: int
+    notes: str = ""
+    created_at: datetime
+
+
+class AsapListCreate(BaseModel):
+    patient_id: uuid.UUID
+    appointment_id: uuid.UUID | None = None
+    provider_name: str = ""
+    appointment_type: str = ""
+    appointment_type_id: uuid.UUID | None = None
+    starts_at: datetime | None = None
+    duration_minutes: int = 30
     notes: str = ""
 
 

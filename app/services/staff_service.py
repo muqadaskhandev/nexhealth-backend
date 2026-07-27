@@ -53,7 +53,7 @@ from app.schemas.staff import (
     SendMessageRequest,
     WaitlistCreate,
 )
-from app.services import form_upload_storage
+from app.services import appointment_rules_service, form_upload_storage
 
 FORM_FIELD_TYPES = {
     "text", "textarea", "email", "number", "phone",
@@ -282,15 +282,43 @@ async def create_appointment(
     patient = await get_patient(db, ctx, data.patient_id)
     if patient is None:
         raise ValueError("Patient not found")
+
+    mapping_context = None
+    if data.mapping_fields is not None:
+        mapping_context = appointment_rules_service.MappingContext(
+            provider_name=data.provider_name,
+            operatory=data.mapping_fields.operatory,
+            visit_type=data.mapping_fields.visit_type,
+            service_type=data.mapping_fields.service_type,
+            procedure_codes=data.mapping_fields.procedure_codes,
+        )
+    elif data.provider_name:
+        mapping_context = appointment_rules_service.MappingContext(provider_name=data.provider_name)
+
+    appt_type, meta = await appointment_rules_service.resolve_appointment_type(
+        db,
+        practice_id=ctx.practice_id,
+        location_id=ctx.location_id,
+        appointment_type_id=data.appointment_type_id,
+        appointment_type_name=data.appointment_type if not data.appointment_type_id else None,
+        mapping_context=mapping_context,
+        source="staff",
+    )
+
+    type_name = appt_type.name if appt_type else data.appointment_type
+    duration = appt_type.duration_minutes if appt_type else data.duration_minutes
+
     appt = Appointment(
         practice_id=ctx.practice_id,
         location_id=ctx.location_id,
         patient_id=data.patient_id,
         provider_name=data.provider_name,
-        appointment_type=data.appointment_type,
+        appointment_type=type_name,
+        appointment_type_def_id=appt_type.id if appt_type else None,
         starts_at=data.starts_at,
-        duration_minutes=data.duration_minutes,
+        duration_minutes=duration,
         status=AppointmentStatus(data.status),
+        meta=meta,
     )
     db.add(appt)
     await db.flush()
@@ -298,10 +326,12 @@ async def create_appointment(
         db,
         patient_id=data.patient_id,
         activity_type=ActivityType.APPOINTMENT,
-        title=f"Appointment scheduled — {data.appointment_type}",
-        meta={"appointment_id": str(appt.id)},
+        title=f"Appointment scheduled — {type_name}",
+        meta={"appointment_id": str(appt.id), **meta},
     )
-    await evaluate_automatic_form_requests(db, ctx, appt)
+    await evaluate_automatic_form_requests(
+        db, practice_id=ctx.practice_id, location_id=ctx.location_id, appointment=appt, ctx=ctx
+    )
     return appt
 
 
@@ -352,6 +382,9 @@ async def list_waitlist(db: AsyncSession, ctx: StaffContext) -> list[tuple[Waitl
 async def add_waitlist(
     db: AsyncSession, ctx: StaffContext, data: WaitlistCreate
 ) -> WaitlistEntry:
+    patient = await get_patient(db, ctx, data.patient_id)
+    if patient is None:
+        raise ValueError("Patient not found")
     entry = WaitlistEntry(
         practice_id=ctx.practice_id,
         location_id=ctx.location_id,
@@ -361,6 +394,29 @@ async def add_waitlist(
         notes=data.notes,
     )
     db.add(entry)
+    await db.flush()
+    await _log_activity(
+        db,
+        patient_id=data.patient_id,
+        activity_type=ActivityType.NOTE,
+        title="Added to waitlist",
+        meta={"waitlist_entry_id": str(entry.id)},
+    )
+    return entry
+
+
+async def remove_waitlist(db: AsyncSession, ctx: StaffContext, entry_id: uuid.UUID) -> WaitlistEntry | None:
+    result = await db.execute(
+        select(WaitlistEntry).where(
+            WaitlistEntry.id == entry_id,
+            WaitlistEntry.practice_id == ctx.practice_id,
+            WaitlistEntry.location_id == ctx.location_id,
+        )
+    )
+    entry = result.scalar_one_or_none()
+    if entry is None:
+        return None
+    entry.status = WaitlistStatus.CANCELLED
     await db.flush()
     return entry
 
@@ -1066,12 +1122,17 @@ async def send_form(
 
 
 async def evaluate_automatic_form_requests(
-    db: AsyncSession, ctx: StaffContext, appointment: Appointment
+    db: AsyncSession,
+    *,
+    practice_id: uuid.UUID,
+    location_id: uuid.UUID,
+    appointment: Appointment,
+    ctx: StaffContext | None = None,
 ) -> None:
     result = await db.execute(
         select(FormTemplate).where(
-            FormTemplate.practice_id == ctx.practice_id,
-            FormTemplate.location_id == ctx.location_id,
+            FormTemplate.practice_id == practice_id,
+            FormTemplate.location_id == location_id,
             FormTemplate.archived_at.is_(None),
             FormTemplate.send_automatically.is_(True),
         )
@@ -1101,14 +1162,17 @@ async def evaluate_automatic_form_requests(
             (today.month, today.day) < (patient.dob.month, patient.dob.day)
         )
 
-    type_result = await db.execute(
-        select(AppointmentTypeDef.id).where(
-            AppointmentTypeDef.practice_id == ctx.practice_id,
-            AppointmentTypeDef.location_id == ctx.location_id,
-            AppointmentTypeDef.name == appointment.appointment_type,
+    if appointment.appointment_type_def_id is not None:
+        matching_type_ids = {str(appointment.appointment_type_def_id)}
+    else:
+        type_result = await db.execute(
+            select(AppointmentTypeDef.id).where(
+                AppointmentTypeDef.practice_id == practice_id,
+                AppointmentTypeDef.location_id == location_id,
+                AppointmentTypeDef.name == appointment.appointment_type,
+            )
         )
-    )
-    matching_type_ids = {str(i) for i in type_result.scalars().all()}
+        matching_type_ids = {str(i) for i in type_result.scalars().all()}
 
     matched: list[FormTemplate] = []
     for tpl in templates:
@@ -1144,7 +1208,7 @@ async def evaluate_automatic_form_requests(
     if not filtered:
         return
 
-    location = await db.get(Location, ctx.location_id)
+    location = await db.get(Location, location_id)
     amount = location.form_expiration_amount if location else 7
     unit = location.form_expiration_unit if location else "days"
     expires_at = _compute_expires_at(amount, unit, now)
@@ -1152,8 +1216,8 @@ async def evaluate_automatic_form_requests(
     for tpl in filtered:
         db.add(
             FormRequest(
-                practice_id=ctx.practice_id,
-                location_id=ctx.location_id,
+                practice_id=practice_id,
+                location_id=location_id,
                 patient_id=appointment.patient_id,
                 form_template_id=tpl.id,
                 expires_at=expires_at,
@@ -1161,8 +1225,11 @@ async def evaluate_automatic_form_requests(
         )
     await db.flush()
 
+    if ctx is None:
+        return
+
     raw_token = await create_form_access_token(
-        db, practice_id=ctx.practice_id, location_id=ctx.location_id, patient_id=appointment.patient_id, expires_at=expires_at
+        db, practice_id=practice_id, location_id=location_id, patient_id=appointment.patient_id, expires_at=expires_at
     )
     link = f"{settings.frontend_url}/forms/{raw_token}"
 

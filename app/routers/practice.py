@@ -7,6 +7,8 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dependencies import require_admin, require_practice_user
+from app.core.ehr_gate import require_ehr_sync_enabled
+from app.config import settings
 from app.database import get_db
 from app.models.user import User
 from app.schemas.location import LocationOut, LocationUpdate, LogoCopyRequest
@@ -27,6 +29,7 @@ from app.schemas.practice import (
 from app.models.invite import InviteType
 from app.services import (
     email_service,
+    google_reserve_service,
     invite_service,
     logo_storage,
     practice_service,
@@ -46,6 +49,7 @@ def _practice_out(practice) -> PracticeOut:
         state=practice.state,
         zip_code=practice.zip_code,
         phone=practice.phone,
+        booking_redirect_url=practice.booking_redirect_url or "",
         subscription_plan=practice.subscription_plan,
         enabled_products=practice.enabled_products,
         ehr_system=practice.ehr_system,
@@ -104,6 +108,7 @@ async def update_my_practice(
         state=payload.state,
         zip_code=payload.zip_code,
         phone=payload.phone,
+        booking_redirect_url=payload.booking_redirect_url,
         enabled_products=products,
     )
     await db.commit()
@@ -118,6 +123,7 @@ async def connect_ehr(
     db: AsyncSession = Depends(get_db),
 ) -> PracticeOut:
     """Select the practice EHR system and reset connector setup."""
+    require_ehr_sync_enabled()
     practice = await _get_admin_practice(admin, db)
     await practice_service.connect_ehr(db, practice, ehr_system=payload.ehr_system)
     await db.commit()
@@ -142,6 +148,7 @@ async def save_ehr_credentials(
     admin: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ) -> EhrConnectionOut:
+    require_ehr_sync_enabled()
     practice = await _get_admin_practice(admin, db)
     try:
         conn = await synchronizer_service.save_credentials(
@@ -164,6 +171,7 @@ async def map_ehr_locations(
     admin: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ) -> PracticeOut:
+    require_ehr_sync_enabled()
     practice = await _get_admin_practice(admin, db)
     try:
         await synchronizer_service.map_locations(
@@ -183,6 +191,7 @@ async def test_ehr_connection(
     admin: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ) -> ConnectionTestOut:
+    require_ehr_sync_enabled()
     practice = await _get_admin_practice(admin, db)
     result = await synchronizer_service.test_connection(db, practice, practice.locations)
     await db.commit()
@@ -199,6 +208,7 @@ async def run_ehr_sync(
     admin: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ) -> SyncRunOut:
+    require_ehr_sync_enabled()
     practice = await _get_admin_practice(admin, db)
     try:
         imported, updated, message = await synchronizer_service.run_initial_sync(
@@ -253,11 +263,17 @@ async def update_location(
     db: AsyncSession = Depends(get_db),
 ) -> LocationOut:
     _, location = await _get_admin_location(admin, db, location_id)
-    await practice_service.update_location(
-        db,
-        location,
-        **payload.model_dump(exclude_unset=True),
-    )
+    data = payload.model_dump(exclude_unset=True)
+    reserve_toggle = data.pop("reserve_with_google", None)
+    if reserve_toggle is not None:
+        try:
+            google_reserve_service.apply_reserve_with_google(location, enabled=reserve_toggle)
+        except ValueError as exc:
+            await db.commit()
+            await db.refresh(location)
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    if data:
+        await practice_service.update_location(db, location, **data)
     await db.commit()
     await db.refresh(location)
     return LocationOut.model_validate(location)
@@ -351,7 +367,7 @@ async def copy_reserve_with_google(
                 status.HTTP_404_NOT_FOUND,
                 detail=f"Location {target_id} not found",
             )
-        target.reserve_with_google = source.reserve_with_google
+        google_reserve_service.copy_reserve_settings(source, target)
         updated.append(target)
 
     await db.commit()

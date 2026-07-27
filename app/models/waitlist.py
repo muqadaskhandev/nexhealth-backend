@@ -5,7 +5,7 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum, ForeignKey, func
+from sqlalchemy import DateTime, Enum, ForeignKey, String, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -15,6 +15,11 @@ from app.database import Base
 class WaitlistRequestStatus(str, enum.Enum):
     SENT = "sent"
     CANCELLED = "cancelled"
+
+
+class WaitlistTemplateType(str, enum.Enum):
+    ASAP = "asap"
+    CONTINUING_CARE = "continuing_care"
 
 
 class WaitlistRequest(Base):
@@ -32,6 +37,7 @@ class WaitlistRequest(Base):
         nullable=False,
         default=WaitlistRequestStatus.SENT,
     )
+    template_type: Mapped[str] = mapped_column(String(40), nullable=False, default=WaitlistTemplateType.ASAP.value)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -75,4 +81,6 @@ class WaitlistRequestPatient(Base):
     patient_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("patients.id", ondelete="CASCADE"), index=True
     )
+    booking_token: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), default=uuid.uuid4, unique=True, index=True)
     notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    scheduled_notify_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

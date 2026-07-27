@@ -37,6 +37,7 @@ class AppointmentTypeDef(Base):
         default=PatientTypeRule.ALL,
     )
     allow_patient_cancel: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

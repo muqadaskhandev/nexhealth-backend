@@ -44,6 +44,8 @@ class Location(Base):
     set_availability_by_operatory: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     ask_for_insurance: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     reserve_with_google: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    google_reserve_status: Mapped[str] = mapped_column(String(20), nullable=False, default="inactive")
+    google_reserve_message: Mapped[str] = mapped_column(String(500), nullable=False, default="")
     form_expiration_amount: Mapped[int] = mapped_column(Integer, default=7, nullable=False)
     form_expiration_unit: Mapped[str] = mapped_column(String(20), default="days", nullable=False)
     form_sync_mode: Mapped[str] = mapped_column(String(20), default="automatic", nullable=False)

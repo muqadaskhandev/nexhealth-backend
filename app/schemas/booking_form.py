@@ -28,6 +28,7 @@ class BookingFormFieldCreate(BaseModel):
     required: bool = False
     note_text: str = ""
     options: list[str] = Field(default_factory=list)
+    add_to_all_locations: bool = False
 
 
 class BookingFormFieldUpdate(BaseModel):
@@ -57,3 +58,8 @@ class BookingInsuranceCreate(BaseModel):
 
 class BookingInsuranceBulkCreate(BaseModel):
     names: list[str] = Field(min_length=1)
+    copy_to_all_locations: bool = False
+
+
+class BookingInsuranceCopyToLocations(BaseModel):
+    location_ids: list[uuid.UUID] = Field(min_length=1)

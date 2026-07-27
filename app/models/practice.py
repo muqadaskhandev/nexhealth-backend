@@ -63,6 +63,7 @@ class Practice(Base):
     state: Mapped[str] = mapped_column(String(80), nullable=False, default="")
     zip_code: Mapped[str] = mapped_column(String(20), nullable=False, default="")
     phone: Mapped[str] = mapped_column(String(40), nullable=False, default="")
+    booking_redirect_url: Mapped[str] = mapped_column(String(500), nullable=False, default="")
 
     subscription_plan: Mapped[SubscriptionPlan] = mapped_column(
         Enum(

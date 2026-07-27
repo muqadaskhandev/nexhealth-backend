@@ -26,6 +26,8 @@ class LocationOut(BaseModel):
     set_availability_by_operatory: bool = False
     ask_for_insurance: bool = False
     reserve_with_google: bool = False
+    google_reserve_status: str = "inactive"
+    google_reserve_message: str = ""
     form_expiration_amount: int = 7
     form_expiration_unit: str = "days"
     form_sync_mode: str = "automatic"

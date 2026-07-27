@@ -8,9 +8,23 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.staff_context import StaffContext
 from app.models.booking_form import BookingFieldType, BookingFormField, BookingInsurance
+from app.models.location import Location
 from app.schemas.booking_form import BookingFormFieldCreate, BookingFormFieldUpdate
 
 VALID_SHOW_TO = {"all", "new", "existing"}
+
+DEFAULT_BOOKING_INSURANCES = [
+    "Aetna",
+    "Anthem",
+    "Blue Cross Blue Shield",
+    "Cigna",
+    "Humana",
+    "Kaiser Permanente",
+    "MetLife",
+    "United Healthcare",
+    "Delta Dental",
+    "Guardian",
+]
 
 
 def _validate_field(field_type: str, show_to: str, note_text: str, options: list[str]) -> None:
@@ -39,31 +53,88 @@ async def get_form_field(db: AsyncSession, ctx: StaffContext, field_id: uuid.UUI
     return field
 
 
-async def create_form_field(
-    db: AsyncSession, ctx: StaffContext, data: BookingFormFieldCreate
-) -> BookingFormField:
-    _validate_field(data.field_type, data.show_to, data.note_text, data.options)
+async def _practice_location_ids(db: AsyncSession, practice_id: uuid.UUID) -> list[uuid.UUID]:
+    result = await db.execute(select(Location.id).where(Location.practice_id == practice_id))
+    return list(result.scalars().all())
 
+
+async def _next_field_position(db: AsyncSession, practice_id: uuid.UUID, location_id: uuid.UUID) -> int:
     result = await db.execute(
         select(BookingFormField.position)
-        .where(BookingFormField.practice_id == ctx.practice_id, BookingFormField.location_id == ctx.location_id)
+        .where(BookingFormField.practice_id == practice_id, BookingFormField.location_id == location_id)
         .order_by(BookingFormField.position.desc())
         .limit(1)
     )
     max_position = result.scalar_one_or_none()
-    field = BookingFormField(
-        practice_id=ctx.practice_id,
-        location_id=ctx.location_id,
+    return (max_position + 1) if max_position is not None else 0
+
+
+def _build_field(
+    *,
+    practice_id: uuid.UUID,
+    location_id: uuid.UUID,
+    data: BookingFormFieldCreate,
+    position: int,
+) -> BookingFormField:
+    return BookingFormField(
+        practice_id=practice_id,
+        location_id=location_id,
         field_type=BookingFieldType(data.field_type),
         label=data.label,
         show_to=data.show_to,
         required=data.required,
         note_text=data.note_text,
         options=data.options,
-        position=(max_position + 1) if max_position is not None else 0,
+        position=position,
     )
+
+
+async def _upsert_field_at_location(
+    db: AsyncSession,
+    *,
+    practice_id: uuid.UUID,
+    location_id: uuid.UUID,
+    data: BookingFormFieldCreate,
+) -> BookingFormField:
+    result = await db.execute(
+        select(BookingFormField).where(
+            BookingFormField.practice_id == practice_id,
+            BookingFormField.location_id == location_id,
+            BookingFormField.label == data.label,
+            BookingFormField.field_type == BookingFieldType(data.field_type),
+        )
+    )
+    existing = result.scalar_one_or_none()
+    if existing:
+        existing.show_to = data.show_to
+        existing.required = data.required
+        existing.note_text = data.note_text
+        existing.options = data.options
+        await db.flush()
+        return existing
+
+    position = await _next_field_position(db, practice_id, location_id)
+    field = _build_field(practice_id=practice_id, location_id=location_id, data=data, position=position)
     db.add(field)
     await db.flush()
+    return field
+
+
+async def create_form_field(
+    db: AsyncSession, ctx: StaffContext, data: BookingFormFieldCreate
+) -> BookingFormField:
+    _validate_field(data.field_type, data.show_to, data.note_text, data.options)
+
+    field = await _upsert_field_at_location(
+        db, practice_id=ctx.practice_id, location_id=ctx.location_id, data=data
+    )
+
+    if data.add_to_all_locations:
+        for loc_id in await _practice_location_ids(db, ctx.practice_id):
+            if loc_id == ctx.location_id:
+                continue
+            await _upsert_field_at_location(db, practice_id=ctx.practice_id, location_id=loc_id, data=data)
+
     return field
 
 
@@ -136,9 +207,29 @@ async def create_insurance(db: AsyncSession, ctx: StaffContext, name: str) -> Bo
 
 
 async def bulk_create_insurances(
-    db: AsyncSession, ctx: StaffContext, names: list[str]
+    db: AsyncSession, ctx: StaffContext, names: list[str], *, copy_to_all_locations: bool = False
 ) -> list[BookingInsurance]:
-    existing = await list_insurances(db, ctx)
+    added = await _bulk_create_insurances_at_location(db, ctx.practice_id, ctx.location_id, names)
+
+    if copy_to_all_locations:
+        for loc_id in await _practice_location_ids(db, ctx.practice_id):
+            if loc_id == ctx.location_id:
+                continue
+            await _bulk_create_insurances_at_location(db, ctx.practice_id, loc_id, names)
+
+    return added
+
+
+async def _bulk_create_insurances_at_location(
+    db: AsyncSession, practice_id: uuid.UUID, location_id: uuid.UUID, names: list[str]
+) -> list[BookingInsurance]:
+    result = await db.execute(
+        select(BookingInsurance).where(
+            BookingInsurance.practice_id == practice_id,
+            BookingInsurance.location_id == location_id,
+        )
+    )
+    existing = list(result.scalars().all())
     existing_names = {i.name.strip().lower() for i in existing}
     added: list[BookingInsurance] = []
     for raw_name in names:
@@ -146,6 +237,45 @@ async def bulk_create_insurances(
         if not name or name.lower() in existing_names:
             continue
         existing_names.add(name.lower())
+        insurance = BookingInsurance(practice_id=practice_id, location_id=location_id, name=name)
+        db.add(insurance)
+        added.append(insurance)
+    await db.flush()
+    return added
+
+
+async def copy_insurances_to_locations(
+    db: AsyncSession, ctx: StaffContext, location_ids: list[uuid.UUID]
+) -> int:
+    sources = await list_insurances(db, ctx)
+    if not sources:
+        raise ValueError("Add at least one insurance to copy")
+
+    target_locations = [lid for lid in dict.fromkeys(location_ids) if lid != ctx.location_id]
+    if not target_locations:
+        raise ValueError("Select at least one other location to copy to")
+
+    copied = 0
+    names = [s.name for s in sources]
+    for loc_id in target_locations:
+        added = await _bulk_create_insurances_at_location(db, ctx.practice_id, loc_id, names)
+        copied += len(added)
+    return copied
+
+
+async def restore_default_insurances(db: AsyncSession, ctx: StaffContext) -> list[BookingInsurance]:
+    result = await db.execute(
+        select(BookingInsurance).where(
+            BookingInsurance.practice_id == ctx.practice_id,
+            BookingInsurance.location_id == ctx.location_id,
+        )
+    )
+    for row in result.scalars().all():
+        await db.delete(row)
+    await db.flush()
+
+    added: list[BookingInsurance] = []
+    for name in DEFAULT_BOOKING_INSURANCES:
         insurance = BookingInsurance(practice_id=ctx.practice_id, location_id=ctx.location_id, name=name)
         db.add(insurance)
         added.append(insurance)

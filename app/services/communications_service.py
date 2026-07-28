@@ -2,10 +2,10 @@
 from __future__ import annotations
 
 import uuid
-from datetime import time
+from datetime import date, datetime, time, timedelta, timezone
 
 from fastapi import HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -14,11 +14,13 @@ from app.models.appointment_types import AppointmentTypeDef
 from app.models.communications import (
     CommunicationTemplate,
     CommunicationTemplateStep,
+    TemplateAutomationSend,
     TemplateCategory,
     TemplateConfiguration,
     TemplateStepKind,
 )
 from app.models.location import Location
+from app.models.staff import Appointment, Patient
 from app.schemas.communications import (
     CommunicationTemplateUpdate,
     TemplateAppointmentTypeStatus,
@@ -709,3 +711,158 @@ async def update_config(
     await db.commit()
     await db.refresh(config)
     return config
+
+
+_HISTORY_FALLBACK_NAMES = [
+    ("Albert Einstein", date(1879, 3, 14)),
+    ("Marie Curie", date(1867, 11, 7)),
+    ("Isaac Newton", date(1643, 1, 4)),
+    ("Nikola Tesla", date(1856, 7, 10)),
+    ("Louis Pasteur", date(1822, 12, 27)),
+    ("Alexander Fleming", date(1881, 8, 6)),
+]
+
+_HISTORY_LABELS_BY_SLUG: dict[str, list[str]] = {
+    "reminders": ["1 day reminder", "1 day reminder", "2 day reminder", "1 week reminder"],
+    "recalls": ["Recall reminder", "6 month recall"],
+    "reviews": ["Review request"],
+        "payments": ["Payment request"],
+    "form-reminder": ["Form reminder"],
+    "save-the-date": ["Save the Date"],
+    "new-patient": ["New patient welcome"],
+}
+
+
+def _default_history_labels(slug: str) -> list[str]:
+    return _HISTORY_LABELS_BY_SLUG.get(slug) or [f"{slug.replace('-', ' ').title()} send"]
+
+
+async def _ensure_template_history_seeded(
+    db: AsyncSession, ctx: StaffContext, template: CommunicationTemplate
+) -> None:
+    """Seed demo automation history so History tab has recipients to browse."""
+    count = await db.scalar(
+        select(func.count())
+        .select_from(TemplateAutomationSend)
+        .where(TemplateAutomationSend.template_id == template.id)
+    )
+    if count and count > 0:
+        return
+
+    patients = list(
+        await db.scalars(
+            select(Patient)
+            .where(
+                Patient.practice_id == ctx.practice_id,
+                Patient.location_id == ctx.location_id,
+            )
+            .order_by(Patient.last_name.asc())
+            .limit(8)
+        )
+    )
+
+    appts = list(
+        await db.scalars(
+            select(Appointment)
+            .where(
+                Appointment.practice_id == ctx.practice_id,
+                Appointment.location_id == ctx.location_id,
+            )
+            .order_by(Appointment.starts_at.desc())
+            .limit(12)
+        )
+    )
+    appt_by_patient = {a.patient_id: a for a in appts}
+
+    now = datetime.now(timezone.utc)
+    labels = _default_history_labels(template.slug)
+    rows: list[TemplateAutomationSend] = []
+
+    if patients:
+        for i, patient in enumerate(patients[:6]):
+            appt = appt_by_patient.get(patient.id)
+            label = labels[i % len(labels)]
+            channel = "sms" if i % 2 == 0 else "email"
+            rows.append(
+                TemplateAutomationSend(
+                    practice_id=ctx.practice_id,
+                    location_id=ctx.location_id,
+                    template_id=template.id,
+                    patient_id=patient.id,
+                    patient_name=f"{patient.first_name} {patient.last_name}".strip(),
+                    patient_dob=patient.dob,
+                    communication_label=label,
+                    channel=channel,
+                    sent_at=now - timedelta(days=i, hours=3 - (i % 3), minutes=15),
+                    provider_name=(appt.provider_name if appt else "Hygienist - Hyg"),
+                    appointment_at=appt.starts_at if appt else now + timedelta(days=1, hours=10 + i),
+                )
+            )
+    else:
+        for i, (name, dob) in enumerate(_HISTORY_FALLBACK_NAMES):
+            label = labels[i % len(labels)]
+            channel = "sms" if i % 2 == 0 else "email"
+            rows.append(
+                TemplateAutomationSend(
+                    practice_id=ctx.practice_id,
+                    location_id=ctx.location_id,
+                    template_id=template.id,
+                    patient_id=None,
+                    patient_name=name,
+                    patient_dob=dob,
+                    communication_label=label,
+                    channel=channel,
+                    sent_at=now - timedelta(days=i, hours=3, minutes=15),
+                    provider_name="Hygienist - Hyg",
+                    appointment_at=now + timedelta(days=1, hours=10 + i * 0.5),
+                )
+            )
+
+    for row in rows:
+        db.add(row)
+    # Keep list/performance counts in sync with seeded history
+    template.total_sent = max(template.total_sent, len(rows))
+    template.recipients = max(template.recipients, len({r.patient_name for r in rows}))
+    await db.commit()
+
+
+async def list_template_history(
+    db: AsyncSession,
+    ctx: StaffContext,
+    template_id: uuid.UUID,
+    *,
+    q: str | None = None,
+    sent_from: date | None = None,
+    sent_to: date | None = None,
+) -> list[TemplateAutomationSend]:
+    template = await get_template(db, ctx, template_id)
+    await _ensure_template_history_seeded(db, ctx, template)
+
+    stmt = (
+        select(TemplateAutomationSend)
+        .where(
+            TemplateAutomationSend.template_id == template.id,
+            TemplateAutomationSend.practice_id == ctx.practice_id,
+            TemplateAutomationSend.location_id == ctx.location_id,
+        )
+        .order_by(TemplateAutomationSend.sent_at.desc())
+    )
+    if q and q.strip():
+        needle = f"%{q.strip()}%"
+        stmt = stmt.where(
+            or_(
+                TemplateAutomationSend.patient_name.ilike(needle),
+                TemplateAutomationSend.communication_label.ilike(needle),
+                TemplateAutomationSend.provider_name.ilike(needle),
+            )
+        )
+    if sent_from is not None:
+        start = datetime(sent_from.year, sent_from.month, sent_from.day, tzinfo=timezone.utc)
+        stmt = stmt.where(TemplateAutomationSend.sent_at >= start)
+    if sent_to is not None:
+        end = datetime(
+            sent_to.year, sent_to.month, sent_to.day, 23, 59, 59, tzinfo=timezone.utc
+        )
+        stmt = stmt.where(TemplateAutomationSend.sent_at <= end)
+
+    return list(await db.scalars(stmt.limit(200)))

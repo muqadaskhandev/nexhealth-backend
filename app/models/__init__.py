@@ -11,6 +11,7 @@ from app.models.communications import (
     TemplateCategory,
     TemplateConfiguration,
     TemplateStepKind,
+    TemplateAutomationSend,
 )
 from app.models.ehr_connection import ConnectionMode, EhrConnection, EhrSyncLog
 from app.models.invite import InviteToken, InviteType

@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import uuid
 
+from datetime import date
+
 from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,6 +18,7 @@ from app.schemas.communications import (
     OtherTemplateDedupeOut,
     OtherTemplateDedupeRequest,
     TemplateAppointmentTypeStatus,
+    TemplateAutomationHistoryOut,
     TemplateConfigurationOut,
     TemplateConfigurationUpdate,
     TemplateStepCreate,
@@ -117,6 +120,25 @@ async def get_template(
 ):
     row = await svc.get_template(db, ctx, template_id)
     return _template_out(row)
+
+
+@router.get(
+    "/api/communication-templates/{template_id}/history",
+    response_model=list[TemplateAutomationHistoryOut],
+)
+async def list_template_history(
+    template_id: uuid.UUID,
+    q: str | None = Query(default=None, description="Search by recipient name"),
+    sent_from: date | None = Query(default=None),
+    sent_to: date | None = Query(default=None),
+    db: AsyncSession = Depends(get_db),
+    ctx: StaffContext = Depends(get_staff_context),
+):
+    """Patients who received this template automation (History tab)."""
+    rows = await svc.list_template_history(
+        db, ctx, template_id, q=q, sent_from=sent_from, sent_to=sent_to
+    )
+    return [TemplateAutomationHistoryOut.model_validate(r) for r in rows]
 
 
 @router.patch("/api/communication-templates/{template_id}", response_model=CommunicationTemplateOut)
@@ -274,7 +296,7 @@ async def preview_message_grouping(
                 )
             )
     else:
-        day = body.date
+        day = body.on_date
         if day is None:
             day = datetime.now(timezone.utc).date()
         start = datetime(day.year, day.month, day.day, tzinfo=timezone.utc)

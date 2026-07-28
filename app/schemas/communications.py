@@ -123,7 +123,7 @@ class MessageGroupingPreviewRequest(BaseModel):
     use_family_messaging_for_reminders: bool | None = None
     appointment_journeys_enabled: bool | None = None
     appointments: list[MessageGroupingAppointmentIn] | None = None
-    date: date | None = None  # when appointments omitted, load location appts for this day
+    on_date: date | None = None  # when appointments omitted, load location appts for this day
 
 
 class MessageGroupOut(BaseModel):
@@ -157,3 +157,18 @@ class OtherTemplateDedupeOut(BaseModel):
     should_send: bool
     reason: str
     confirm_applies_to_all_mentioned: bool
+
+
+class TemplateAutomationHistoryOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    template_id: uuid.UUID
+    patient_id: uuid.UUID | None = None
+    patient_name: str
+    patient_dob: date | None = None
+    communication_label: str
+    channel: str
+    sent_at: datetime
+    provider_name: str
+    appointment_at: datetime | None = None

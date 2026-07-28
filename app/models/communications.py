@@ -3,10 +3,11 @@ from __future__ import annotations
 
 import enum
 import uuid
-from datetime import datetime, time
+from datetime import date, datetime, time
 
 from sqlalchemy import (
     Boolean,
+    Date,
     DateTime,
     Enum,
     ForeignKey,
@@ -103,6 +104,38 @@ class CommunicationTemplateStep(Base):
     meta: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
 
     template: Mapped["CommunicationTemplate"] = relationship(back_populates="steps")
+
+
+class TemplateAutomationSend(Base):
+    """One automated send recorded on a template's History tab."""
+
+    __tablename__ = "communication_template_sends"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    practice_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("practices.id", ondelete="CASCADE"), index=True
+    )
+    location_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("locations.id", ondelete="CASCADE"), index=True
+    )
+    template_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("communication_templates.id", ondelete="CASCADE"),
+        index=True,
+    )
+    patient_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("patients.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    patient_name: Mapped[str] = mapped_column(String(240), nullable=False, default="")
+    patient_dob: Mapped[date | None] = mapped_column(Date, nullable=True)
+    communication_label: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    channel: Mapped[str] = mapped_column(String(20), nullable=False, default="sms")  # sms | email
+    sent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    provider_name: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    appointment_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
 
 
 class TemplateConfiguration(Base):

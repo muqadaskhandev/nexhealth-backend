@@ -123,6 +123,13 @@ class TemplateConfiguration(Base):
     customize_by_appointment_type: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False
     )
+    family_messaging_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+    use_family_messaging_for_reminders: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+    family_messaging_age_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
     )

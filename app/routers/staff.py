@@ -844,6 +844,9 @@ async def list_messages(
             sent_at=m.sent_at,
             patient_id=p.id,
             patient_name=f"{p.first_name} {p.last_name}",
+            patient_first_name=p.first_name or "",
+            patient_last_name=p.last_name or "",
+            patient_phone=p.phone or "",
         )
         for m, p in rows
     ]
@@ -867,6 +870,9 @@ async def send_message(
         sent_at=msg.sent_at,
         patient_id=payload.patient_id,
         patient_name=f"{patient.first_name} {patient.last_name}" if patient else "",
+        patient_first_name=patient.first_name if patient else "",
+        patient_last_name=patient.last_name if patient else "",
+        patient_phone=patient.phone if patient else "",
     )
 
 

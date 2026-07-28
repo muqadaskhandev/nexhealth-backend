@@ -85,6 +85,9 @@ class TemplateConfigurationOut(BaseModel):
     sending_hours_start: time
     sending_hours_end: time
     customize_by_appointment_type: bool = False
+    family_messaging_enabled: bool = False
+    use_family_messaging_for_reminders: bool = False
+    family_messaging_age_limit: int | None = None
     updated_at: datetime
 
 
@@ -92,3 +95,6 @@ class TemplateConfigurationUpdate(BaseModel):
     sending_hours_start: time | None = None
     sending_hours_end: time | None = None
     customize_by_appointment_type: bool | None = None
+    family_messaging_enabled: bool | None = None
+    use_family_messaging_for_reminders: bool | None = None
+    family_messaging_age_limit: int | None = None

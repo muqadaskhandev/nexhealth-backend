@@ -377,6 +377,9 @@ class MessageOut(BaseModel):
     sent_at: datetime
     patient_id: uuid.UUID | None = None
     patient_name: str = ""
+    patient_first_name: str = ""
+    patient_last_name: str = ""
+    patient_phone: str = ""
 
 
 class SendMessageRequest(BaseModel):

@@ -645,6 +645,9 @@ async def get_or_create_config(db: AsyncSession, ctx: StaffContext) -> TemplateC
         sending_hours_start=time(6, 0),
         sending_hours_end=time(22, 0),
         customize_by_appointment_type=False,
+        family_messaging_enabled=False,
+        use_family_messaging_for_reminders=False,
+        family_messaging_age_limit=None,
     )
     db.add(config)
     await db.commit()
@@ -672,6 +675,23 @@ async def update_config(
         config.sending_hours_end = payload["sending_hours_end"]
     if "customize_by_appointment_type" in payload and payload["customize_by_appointment_type"] is not None:
         config.customize_by_appointment_type = payload["customize_by_appointment_type"]
+    if "family_messaging_enabled" in payload and payload["family_messaging_enabled"] is not None:
+        config.family_messaging_enabled = payload["family_messaging_enabled"]
+        # Turning off family messaging also turns off reminders consolidation
+        if not payload["family_messaging_enabled"]:
+            config.use_family_messaging_for_reminders = False
+    if (
+        "use_family_messaging_for_reminders" in payload
+        and payload["use_family_messaging_for_reminders"] is not None
+    ):
+        if payload["use_family_messaging_for_reminders"] and not config.family_messaging_enabled:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Enable family messaging before using it for Reminders",
+            )
+        config.use_family_messaging_for_reminders = payload["use_family_messaging_for_reminders"]
+    if "family_messaging_age_limit" in payload:
+        config.family_messaging_age_limit = payload["family_messaging_age_limit"]
     await db.commit()
     await db.refresh(config)
     return config

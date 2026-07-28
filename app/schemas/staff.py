@@ -380,12 +380,30 @@ class MessageOut(BaseModel):
     patient_first_name: str = ""
     patient_last_name: str = ""
     patient_phone: str = ""
+    delivery_status: str = "delivered"
+    failure_reason: str | None = None
+    attachment_name: str | None = None
+    thread_unread: bool = False
+    thread_archived: bool = False
 
 
 class SendMessageRequest(BaseModel):
     patient_id: uuid.UUID
-    body: str = Field(min_length=1, max_length=2000)
+    body: str = Field(default="", max_length=2000)
     channel: str = "sms"
+    attachment_name: str | None = Field(default=None, max_length=300)
+
+
+class MessageThreadUpdate(BaseModel):
+    unread: bool | None = None
+    archived: bool | None = None
+
+
+class MessageThreadOut(BaseModel):
+    id: uuid.UUID
+    patient_id: uuid.UUID
+    unread: bool
+    archived: bool
 
 
 class PaymentLinkOut(BaseModel):

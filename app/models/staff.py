@@ -327,6 +327,8 @@ class MessageThread(Base):
     practice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("practices.id", ondelete="CASCADE"))
     location_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("locations.id", ondelete="CASCADE"))
     patient_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("patients.id", ondelete="CASCADE"))
+    unread: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    archived: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -346,6 +348,11 @@ class Message(Base):
         nullable=False,
         default=MessageChannel.SMS,
     )
+    delivery_status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="delivered"
+    )  # delivered | failed | pending
+    failure_reason: Mapped[str | None] = mapped_column(String(400), nullable=True)
+    attachment_name: Mapped[str | None] = mapped_column(String(300), nullable=True)
     sent_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

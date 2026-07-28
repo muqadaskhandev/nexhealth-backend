@@ -46,6 +46,7 @@ from app.schemas.staff import (
     FormTemplateUpdate,
     MedicalAlertCreate,
     MedicalAlertUpdate,
+    MessageThreadUpdate,
     PatientCreate,
     PatientUpdate,
     PaymentLinkCreate,
@@ -53,6 +54,7 @@ from app.schemas.staff import (
     SendMessageRequest,
     WaitlistCreate,
 )
+from fastapi import HTTPException, status
 from app.services import appointment_rules_service, form_upload_storage
 
 FORM_FIELD_TYPES = {
@@ -1707,10 +1709,14 @@ async def get_form_request_submissions(
 
 # ── Messages ─────────────────────────────────────────────────────────────────
 async def list_messages(
-    db: AsyncSession, ctx: StaffContext, *, patient_id: uuid.UUID | None = None
-) -> list[tuple[Message, Patient]]:
+    db: AsyncSession,
+    ctx: StaffContext,
+    *,
+    patient_id: uuid.UUID | None = None,
+    include_archived: bool = False,
+) -> list[tuple[Message, Patient, MessageThread]]:
     stmt = (
-        select(Message, Patient)
+        select(Message, Patient, MessageThread)
         .join(MessageThread, MessageThread.id == Message.thread_id)
         .join(Patient, Patient.id == MessageThread.patient_id)
         .where(
@@ -1720,14 +1726,47 @@ async def list_messages(
     )
     if patient_id:
         stmt = stmt.where(MessageThread.patient_id == patient_id)
-    stmt = stmt.order_by(Message.sent_at.desc()).limit(100)
+    if not include_archived:
+        stmt = stmt.where(MessageThread.archived.is_(False))
+    stmt = stmt.order_by(Message.sent_at.desc()).limit(200)
     result = await db.execute(stmt)
     return list(result.all())
+
+
+def _manual_delivery_outcome(patient: Patient, channel: str) -> tuple[str, str | None]:
+    """Manual Messages always attempt send (ignore office sending hours)."""
+    phone = (patient.phone or "").strip()
+    if channel == "sms" and not phone:
+        return (
+            "failed",
+            "The phone number in the patient profile does not exist or is incorrect",
+        )
+    prefs = patient.notification_prefs or {}
+    if channel == "sms" and prefs.get("sms") is False:
+        return (
+            "failed",
+            "The patient has unsubscribed from that particular type of communication",
+        )
+    # Channel-level type unsubscribes still allow manual chat, but surface a soft note
+    # only when the top-level SMS channel is off (above).
+    return "delivered", None
 
 
 async def send_message(
     db: AsyncSession, ctx: StaffContext, data: SendMessageRequest
 ) -> Message:
+    body = (data.body or "").strip()
+    attachment = (data.attachment_name or "").strip() or None
+    if not body and not attachment:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Message body or attachment is required",
+        )
+
+    patient = await get_patient(db, ctx, data.patient_id)
+    if patient is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Patient not found")
+
     result = await db.execute(
         select(MessageThread).where(
             MessageThread.patient_id == data.patient_id,
@@ -1741,14 +1780,26 @@ async def send_message(
             practice_id=ctx.practice_id,
             location_id=ctx.location_id,
             patient_id=data.patient_id,
+            unread=False,
+            archived=False,
         )
         db.add(thread)
         await db.flush()
+    else:
+        # Sending from staff marks the thread read and restores if archived
+        thread.unread = False
+        thread.archived = False
+
+    delivery_status, failure_reason = _manual_delivery_outcome(patient, data.channel)
+    display_body = body or f"[Attachment: {attachment}]"
     msg = Message(
         thread_id=thread.id,
         direction="outbound",
-        body=data.body,
+        body=display_body,
         channel=MessageChannel(data.channel),
+        delivery_status=delivery_status,
+        failure_reason=failure_reason,
+        attachment_name=attachment,
     )
     db.add(msg)
     await db.flush()
@@ -1756,10 +1807,34 @@ async def send_message(
         db,
         patient_id=data.patient_id,
         activity_type=ActivityType.MESSAGE,
-        title="Message sent",
-        body=data.body,
+        title="Message sent" if delivery_status == "delivered" else "Message failed",
+        body=display_body,
     )
     return msg
+
+
+async def update_message_thread(
+    db: AsyncSession,
+    ctx: StaffContext,
+    thread_id: uuid.UUID,
+    data: MessageThreadUpdate,
+) -> MessageThread:
+    thread = await db.scalar(
+        select(MessageThread).where(
+            MessageThread.id == thread_id,
+            MessageThread.practice_id == ctx.practice_id,
+            MessageThread.location_id == ctx.location_id,
+        )
+    )
+    if thread is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Thread not found")
+    payload = data.model_dump(exclude_unset=True)
+    if "unread" in payload and payload["unread"] is not None:
+        thread.unread = payload["unread"]
+    if "archived" in payload and payload["archived"] is not None:
+        thread.archived = payload["archived"]
+    await db.flush()
+    return thread
 
 
 # ── Payments ─────────────────────────────────────────────────────────────────

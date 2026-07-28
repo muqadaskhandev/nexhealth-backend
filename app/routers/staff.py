@@ -32,6 +32,8 @@ from app.schemas.staff import (
     MedicalAlertOut,
     MedicalAlertUpdate,
     MessageOut,
+    MessageThreadOut,
+    MessageThreadUpdate,
     MoveMedicalAlertRequest,
     PatientCreate,
     PatientOut,
@@ -827,29 +829,38 @@ async def form_request_submissions(
 
 
 # ── Communications ───────────────────────────────────────────────────────────
+def _message_out(m, p, thread) -> MessageOut:
+    return MessageOut(
+        id=m.id,
+        thread_id=m.thread_id,
+        direction=m.direction,
+        body=m.body,
+        channel=m.channel.value if hasattr(m.channel, "value") else m.channel,
+        sent_at=m.sent_at,
+        patient_id=p.id if p else None,
+        patient_name=f"{p.first_name} {p.last_name}".strip() if p else "",
+        patient_first_name=(p.first_name or "") if p else "",
+        patient_last_name=(p.last_name or "") if p else "",
+        patient_phone=(p.phone or "") if p else "",
+        delivery_status=getattr(m, "delivery_status", None) or "delivered",
+        failure_reason=getattr(m, "failure_reason", None),
+        attachment_name=getattr(m, "attachment_name", None),
+        thread_unread=bool(getattr(thread, "unread", False)),
+        thread_archived=bool(getattr(thread, "archived", False)),
+    )
+
+
 @router.get("/api/messages", response_model=list[MessageOut])
 async def list_messages(
     patient_id: uuid.UUID | None = Query(default=None),
+    include_archived: bool = Query(default=False),
     ctx: StaffContext = Depends(get_staff_context),
     db: AsyncSession = Depends(get_db),
 ):
-    rows = await staff_service.list_messages(db, ctx, patient_id=patient_id)
-    return [
-        MessageOut(
-            id=m.id,
-            thread_id=m.thread_id,
-            direction=m.direction,
-            body=m.body,
-            channel=m.channel.value,
-            sent_at=m.sent_at,
-            patient_id=p.id,
-            patient_name=f"{p.first_name} {p.last_name}",
-            patient_first_name=p.first_name or "",
-            patient_last_name=p.last_name or "",
-            patient_phone=p.phone or "",
-        )
-        for m, p in rows
-    ]
+    rows = await staff_service.list_messages(
+        db, ctx, patient_id=patient_id, include_archived=include_archived
+    )
+    return [_message_out(m, p, thread) for m, p, thread in rows]
 
 
 @router.post("/api/messages", response_model=MessageOut, status_code=status.HTTP_201_CREATED)
@@ -860,19 +871,30 @@ async def send_message(
 ):
     msg = await staff_service.send_message(db, ctx, payload)
     patient = await staff_service.get_patient(db, ctx, payload.patient_id)
+    # Reload thread for unread/archived flags
+    from sqlalchemy import select
+    from app.models.staff import MessageThread
+
+    thread = await db.scalar(select(MessageThread).where(MessageThread.id == msg.thread_id))
     await db.commit()
-    return MessageOut(
-        id=msg.id,
-        thread_id=msg.thread_id,
-        direction=msg.direction,
-        body=msg.body,
-        channel=msg.channel.value,
-        sent_at=msg.sent_at,
-        patient_id=payload.patient_id,
-        patient_name=f"{patient.first_name} {patient.last_name}" if patient else "",
-        patient_first_name=patient.first_name if patient else "",
-        patient_last_name=patient.last_name if patient else "",
-        patient_phone=patient.phone if patient else "",
+    return _message_out(msg, patient, thread)
+
+
+@router.patch("/api/message-threads/{thread_id}", response_model=MessageThreadOut)
+async def update_message_thread(
+    thread_id: uuid.UUID,
+    payload: MessageThreadUpdate,
+    ctx: StaffContext = Depends(get_staff_context),
+    db: AsyncSession = Depends(get_db),
+):
+    """Mark a thread unread / archive (or restore)."""
+    thread = await staff_service.update_message_thread(db, ctx, thread_id, payload)
+    await db.commit()
+    return MessageThreadOut(
+        id=thread.id,
+        patient_id=thread.patient_id,
+        unread=thread.unread,
+        archived=thread.archived,
     )
 
 

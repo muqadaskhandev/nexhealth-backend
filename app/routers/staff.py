@@ -214,16 +214,23 @@ async def merge_patients(
 # ── Scheduling ─────────────────────────────────────────────────────────────────
 @router.get("/api/appointments", response_model=list[AppointmentOut])
 async def list_appointments(
-    date: str | None = Query(default=None, description="YYYY-MM-DD"),
+    date: str | None = Query(default=None, description="YYYY-MM-DD (single day)"),
+    start_date: str | None = Query(default=None, description="YYYY-MM-DD range start"),
+    end_date: str | None = Query(default=None, description="YYYY-MM-DD range end"),
     patient_id: uuid.UUID | None = Query(default=None),
     ctx: StaffContext = Depends(get_staff_context),
     db: AsyncSession = Depends(get_db),
 ):
     if patient_id:
         rows = await staff_service.list_appointments(db, ctx, patient_id=patient_id)
+    elif start_date or end_date:
+        start = datetime.fromisoformat(start_date) if start_date else datetime.fromisoformat(end_date)  # type: ignore[arg-type]
+        end = datetime.fromisoformat(end_date) if end_date else start
+        rows = await staff_service.list_appointments(db, ctx, start_day=start, end_day=end)
+    elif date:
+        rows = await staff_service.list_appointments(db, ctx, day=datetime.fromisoformat(date))
     else:
-        day = datetime.fromisoformat(date) if date else datetime.now().astimezone()
-        rows = await staff_service.list_appointments(db, ctx, day=day)
+        rows = await staff_service.list_appointments(db, ctx)
     return [_appt_out(a, p) for a, p in rows]
 
 

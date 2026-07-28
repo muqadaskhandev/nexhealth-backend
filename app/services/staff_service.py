@@ -275,6 +275,8 @@ async def list_appointments(
     ctx: StaffContext,
     *,
     day: datetime | None = None,
+    start_day: datetime | None = None,
+    end_day: datetime | None = None,
     patient_id: uuid.UUID | None = None,
 ) -> list[tuple[Appointment, Patient]]:
     stmt = (
@@ -287,6 +289,12 @@ async def list_appointments(
     )
     if patient_id:
         stmt = stmt.where(Appointment.patient_id == patient_id)
+    elif start_day is not None and end_day is not None:
+        range_start = min(start_day.date(), end_day.date())
+        range_end = max(start_day.date(), end_day.date())
+        start = datetime.combine(range_start, time.min, tzinfo=timezone.utc)
+        end = datetime.combine(range_end, time.max, tzinfo=timezone.utc)
+        stmt = stmt.where(Appointment.starts_at >= start, Appointment.starts_at <= end)
     elif day:
         start = datetime.combine(day.date(), time.min, tzinfo=timezone.utc)
         end = datetime.combine(day.date(), time.max, tzinfo=timezone.utc)

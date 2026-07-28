@@ -11,6 +11,10 @@ from app.database import get_db
 from app.schemas.communications import (
     CommunicationTemplateOut,
     CommunicationTemplateUpdate,
+    MessageGroupingPreviewOut,
+    MessageGroupingPreviewRequest,
+    OtherTemplateDedupeOut,
+    OtherTemplateDedupeRequest,
     TemplateAppointmentTypeStatus,
     TemplateConfigurationOut,
     TemplateConfigurationUpdate,
@@ -210,3 +214,145 @@ async def update_template_config(
 ):
     row = await svc.update_config(db, ctx, body)
     return TemplateConfigurationOut.model_validate(row)
+
+
+@router.get("/api/message-grouping/rules")
+async def get_message_grouping_rules(
+    ctx: StaffContext = Depends(get_staff_context),
+):
+    """Help-center copy for how reminders and other templates group messages."""
+    from app.services.message_grouping import MESSAGE_GROUPING_RULES_DOC
+
+    return MESSAGE_GROUPING_RULES_DOC
+
+
+@router.post("/api/message-grouping/preview", response_model=MessageGroupingPreviewOut)
+async def preview_message_grouping(
+    body: MessageGroupingPreviewRequest,
+    db: AsyncSession = Depends(get_db),
+    ctx: StaffContext = Depends(get_staff_context),
+):
+    """Preview how reminder appointments would be grouped for this location."""
+    from datetime import datetime, timezone
+    from uuid import uuid4
+
+    from app.models.staff import Appointment, Patient
+    from app.services import message_grouping as mg
+    from sqlalchemy import select
+
+    config = await svc.get_or_create_config(db, ctx)
+    family_on = (
+        body.family_messaging_enabled
+        if body.family_messaging_enabled is not None
+        else config.family_messaging_enabled
+    )
+    family_reminders = (
+        body.use_family_messaging_for_reminders
+        if body.use_family_messaging_for_reminders is not None
+        else config.use_family_messaging_for_reminders
+    )
+    journeys = (
+        body.appointment_journeys_enabled
+        if body.appointment_journeys_enabled is not None
+        else config.customize_by_appointment_type
+    )
+
+    candidates: list[mg.ReminderAppointment] = []
+    if body.appointments:
+        for a in body.appointments:
+            candidates.append(
+                mg.ReminderAppointment(
+                    id=a.id or uuid4(),
+                    patient_id=a.patient_id,
+                    patient_name=a.patient_name,
+                    patient_phone=a.patient_phone,
+                    guarantor_phone=a.guarantor_phone,
+                    starts_at=a.starts_at,
+                    duration_minutes=a.duration_minutes,
+                    appointment_type=a.appointment_type,
+                    journey_key=a.journey_key,
+                )
+            )
+    else:
+        day = body.date
+        if day is None:
+            day = datetime.now(timezone.utc).date()
+        start = datetime(day.year, day.month, day.day, tzinfo=timezone.utc)
+        end = start.replace(hour=23, minute=59, second=59)
+        result = await db.execute(
+            select(Appointment, Patient)
+            .join(Patient, Patient.id == Appointment.patient_id)
+            .where(
+                Appointment.practice_id == ctx.practice_id,
+                Appointment.location_id == ctx.location_id,
+                Appointment.starts_at >= start,
+                Appointment.starts_at <= end,
+            )
+            .order_by(Appointment.starts_at.asc())
+        )
+        for appt, patient in result.all():
+            candidates.append(
+                mg.ReminderAppointment(
+                    id=appt.id,
+                    patient_id=patient.id,
+                    patient_name=f"{patient.first_name} {patient.last_name}".strip(),
+                    patient_phone=patient.phone or "",
+                    guarantor_phone=(patient.meta or {}).get("guarantor_phone"),
+                    starts_at=appt.starts_at,
+                    duration_minutes=appt.duration_minutes or 30,
+                    appointment_type=appt.appointment_type or "",
+                    journey_key=str(appt.appointment_type_def_id)
+                    if appt.appointment_type_def_id
+                    else appt.appointment_type,
+                )
+            )
+
+    groups = mg.group_reminder_appointments(
+        candidates,
+        template_content=body.template_content,
+        family_messaging_enabled=family_on,
+        use_family_messaging_for_reminders=family_reminders,
+        appointment_journeys_enabled=journeys,
+    )
+    return MessageGroupingPreviewOut(
+        consolidation_supported=mg.reminder_supports_consolidation(body.template_content),
+        family_messaging_active=bool(family_on and family_reminders),
+        groups=[
+            MessageGroupOut(
+                mode=g.mode,
+                recipient_phone=g.recipient_phone,
+                recipient_label=g.recipient_label,
+                appointment_ids=g.appointment_ids,
+                listed_appointment_ids=g.listed_appointment_ids,
+                patient_names=g.patient_names,
+                notes=g.notes,
+                confirm_applies_to_all=g.confirm_applies_to_all,
+            )
+            for g in groups
+        ],
+    )
+
+
+@router.post("/api/message-grouping/other-template-dedupe", response_model=OtherTemplateDedupeOut)
+async def other_template_dedupe(
+    body: OtherTemplateDedupeRequest,
+    ctx: StaffContext = Depends(get_staff_context),
+):
+    from datetime import datetime, timezone
+
+    from app.services import message_grouping as mg
+
+    decision = mg.other_template_send_decision(
+        template_slug=body.template_slug,
+        content=body.content,
+        phone=body.phone,
+        patient_name=body.patient_name,
+        now=body.now or datetime.now(timezone.utc),
+        last_sent_at=body.last_sent_at,
+        mentioned_appointment_count=body.mentioned_appointment_count,
+    )
+    return OtherTemplateDedupeOut(
+        should_send=decision.should_send,
+        reason=decision.reason,
+        confirm_applies_to_all_mentioned=decision.confirm_applies_to_all_mentioned,
+    )

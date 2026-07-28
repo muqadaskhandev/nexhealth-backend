@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, time
+from datetime import date, datetime, time
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -98,3 +98,62 @@ class TemplateConfigurationUpdate(BaseModel):
     family_messaging_enabled: bool | None = None
     use_family_messaging_for_reminders: bool | None = None
     family_messaging_age_limit: int | None = None
+
+
+# ── Message grouping ─────────────────────────────────────────────────────────
+
+class MessageGroupingAppointmentIn(BaseModel):
+    id: uuid.UUID | None = None
+    patient_id: uuid.UUID
+    patient_name: str
+    patient_phone: str = ""
+    guarantor_phone: str | None = None
+    starts_at: datetime
+    duration_minutes: int = 30
+    appointment_type: str = ""
+    journey_key: str | None = None
+
+
+class MessageGroupingPreviewRequest(BaseModel):
+    template_content: str = Field(
+        default="{{INSERTCONFIRMAPPT}}",
+        description="Reminder body used to detect consolidating smart commands",
+    )
+    family_messaging_enabled: bool | None = None
+    use_family_messaging_for_reminders: bool | None = None
+    appointment_journeys_enabled: bool | None = None
+    appointments: list[MessageGroupingAppointmentIn] | None = None
+    date: date | None = None  # when appointments omitted, load location appts for this day
+
+
+class MessageGroupOut(BaseModel):
+    mode: str
+    recipient_phone: str
+    recipient_label: str
+    appointment_ids: list[str]
+    listed_appointment_ids: list[str]
+    patient_names: list[str]
+    notes: list[str]
+    confirm_applies_to_all: bool
+
+
+class MessageGroupingPreviewOut(BaseModel):
+    consolidation_supported: bool
+    family_messaging_active: bool
+    groups: list[MessageGroupOut]
+
+
+class OtherTemplateDedupeRequest(BaseModel):
+    template_slug: str
+    content: str = ""
+    phone: str
+    patient_name: str
+    last_sent_at: datetime | None = None
+    mentioned_appointment_count: int = 1
+    now: datetime | None = None
+
+
+class OtherTemplateDedupeOut(BaseModel):
+    should_send: bool
+    reason: str
+    confirm_applies_to_all_mentioned: bool

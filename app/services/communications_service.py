@@ -73,7 +73,11 @@ _DEFAULT_TEMPLATES: list[dict] = [
     {
         "slug": "save-the-date",
         "name": "Save the Date",
-        "description": "Sent when a new appointment is scheduled on your practice management calendar (e.g. phone or front desk). Deduped to the same phone and patient name once every 6 hours.",
+        "description": (
+            "Sent when a new appointment is scheduled on your practice management calendar "
+            "(e.g. phone or front desk). Only sends once to the same phone number and patient "
+            "name within a 6-hour window; eligible messages are not merged into one."
+        ),
         "category": TemplateCategory.APPOINTMENT_JOURNEY,
         "is_active": True,
         "total_sent": 68,
@@ -127,7 +131,13 @@ _DEFAULT_TEMPLATES: list[dict] = [
             {
                 "kind": TemplateStepKind.SMS,
                 "title": "Reminders SMS",
-                "body": "Hi {{PATIENT_FIRST_NAME}}, reminder: your appointment at {{LOCATION_NAME}} is on {{APPOINTMENT_DATE}} at {{APPOINTMENT_TIME}}.",
+                "body": (
+                    "Hi {{PATIENT_FIRST_NAME}}, reminder: your appointment at {{LOCATION_NAME}} "
+                    "is on {{APPOINTMENT_DATE}} at {{APPOINTMENT_TIME}}.\n\n"
+                    "{{APPOINTMENT_DETAILS}}\n\n"
+                    "Reply C to confirm: {{INSERTCONFIRMAPPT}}\n"
+                    "{{APPOINTMENT_REGISTRATION}}"
+                ),
                 "position": 2,
             },
         ],
@@ -205,7 +215,11 @@ _DEFAULT_TEMPLATES: list[dict] = [
     {
         "slug": "new-patient",
         "name": "New Patient",
-        "description": "Sent when a new patient is added to your health record system. NexHealth checks every 15 minutes between 8 AM and 7 PM. Sends on patient create, not on booking.",
+        "description": (
+            "Sent when a new patient is added to your health record system. NexHealth checks "
+            "every 15 minutes between 8 AM and 7 PM. Sends on patient create, not on booking. "
+            "Like other non-reminder templates, only once per phone + patient name within 6 hours."
+        ),
         "category": TemplateCategory.PATIENT_BASED,
         "is_active": False,
         "total_sent": 12,

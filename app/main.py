@@ -12,7 +12,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
 from app.config import settings
-from app.routers import appointment_types, auth, booking_form, ehr, invites, locations, platform, practice, providers, public_booking, public_forms, public_waitlist, staff, sso, users, waitlist_requests
+from app.routers import appointment_types, auth, booking_form, communications, ehr, invites, locations, platform, practice, providers, public_booking, public_forms, public_waitlist, staff, sso, users, waitlist_requests
 from app.services.logo_storage import logos_dir
 
 # Import models so metadata is populated (used by health check / migrations).
@@ -76,6 +76,7 @@ app.include_router(platform.router)
 app.include_router(practice.router)
 app.include_router(invites.router)
 app.include_router(staff.router)
+app.include_router(communications.router)
 app.include_router(appointment_types.router)
 app.include_router(providers.router)
 app.include_router(booking_form.router)

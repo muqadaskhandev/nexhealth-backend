@@ -200,12 +200,64 @@ async def create_patient(db: AsyncSession, ctx: StaffContext, data: PatientCreat
 async def update_patient(
     db: AsyncSession, ctx: StaffContext, patient: Patient, data: PatientUpdate
 ) -> Patient:
-    for field, value in data.model_dump(exclude_unset=True).items():
+    payload = data.model_dump(exclude_unset=True)
+    prefs_updated = "notification_prefs" in payload
+
+    for field, value in payload.items():
         if field == "email" and value is not None:
             value = str(value).strip().lower()
         setattr(patient, field, value)
+
+    # SMS preference changes apply to all patients sharing this phone number
+    # (matches NexHealth "manage patient unsubscribes" behavior).
+    if prefs_updated and patient.phone:
+        await _propagate_sms_notification_prefs(db, ctx, patient)
+
     await db.flush()
     return patient
+
+
+def _digits_only(phone: str) -> str:
+    return "".join(c for c in phone if c.isdigit())
+
+
+async def _propagate_sms_notification_prefs(
+    db: AsyncSession, ctx: StaffContext, source: Patient
+) -> None:
+    """Copy SMS channel settings from source.notification_prefs to same-phone patients."""
+    phone_key = _digits_only(source.phone or "")
+    if len(phone_key) < 7:
+        return
+
+    source_prefs = source.notification_prefs or {}
+    source_types = source_prefs.get("types") or {}
+    if not isinstance(source_types, dict):
+        return
+
+    result = await db.execute(
+        select(Patient).where(
+            Patient.practice_id == ctx.practice_id,
+            Patient.location_id == ctx.location_id,
+            Patient.id != source.id,
+            Patient.archived.is_(False),
+        )
+    )
+    for other in result.scalars().all():
+        if _digits_only(other.phone or "") != phone_key:
+            continue
+        other_prefs = dict(other.notification_prefs or {})
+        other_types = dict(other_prefs.get("types") or {})
+        for type_name, channels in source_types.items():
+            if not isinstance(channels, dict):
+                continue
+            existing = dict(other_types.get(type_name) or {"email": True, "sms": True})
+            existing["sms"] = bool(channels.get("sms", True))
+            other_types[type_name] = existing
+        other_prefs["types"] = other_types
+        # Master SMS toggle: off only if every type SMS is off
+        if other_types:
+            other_prefs["sms"] = all(bool(v.get("sms", True)) for v in other_types.values())
+        other.notification_prefs = other_prefs
 
 
 async def find_duplicate_patients(db: AsyncSession, ctx: StaffContext) -> list[list[Patient]]:

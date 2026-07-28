@@ -144,7 +144,19 @@ async def _notify_patient(
         booking_url=booking_url,
     )
     thread = await _get_or_create_thread(db, ctx, patient.id)
-    db.add(Message(thread_id=thread.id, direction="outbound", body=body, channel=MessageChannel.SMS, sent_at=now))
+    # New messages restore archived conversations to the inbox
+    thread.archived = False
+    thread.unread = False
+    db.add(
+        Message(
+            thread_id=thread.id,
+            direction="outbound",
+            body=body,
+            channel=MessageChannel.SMS,
+            sent_at=now,
+            delivery_status="delivered",
+        )
+    )
     wp.notified_at = now
     wp.scheduled_notify_at = None
 

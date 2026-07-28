@@ -854,11 +854,18 @@ def _message_out(m, p, thread) -> MessageOut:
 async def list_messages(
     patient_id: uuid.UUID | None = Query(default=None),
     include_archived: bool = Query(default=False),
+    archived_only: bool = Query(default=False),
+    unread_only: bool = Query(default=False),
     ctx: StaffContext = Depends(get_staff_context),
     db: AsyncSession = Depends(get_db),
 ):
     rows = await staff_service.list_messages(
-        db, ctx, patient_id=patient_id, include_archived=include_archived
+        db,
+        ctx,
+        patient_id=patient_id,
+        include_archived=include_archived,
+        archived_only=archived_only,
+        unread_only=unread_only,
     )
     return [_message_out(m, p, thread) for m, p, thread in rows]
 

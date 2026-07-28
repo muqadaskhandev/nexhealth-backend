@@ -1714,6 +1714,8 @@ async def list_messages(
     *,
     patient_id: uuid.UUID | None = None,
     include_archived: bool = False,
+    archived_only: bool = False,
+    unread_only: bool = False,
 ) -> list[tuple[Message, Patient, MessageThread]]:
     stmt = (
         select(Message, Patient, MessageThread)
@@ -1726,8 +1728,12 @@ async def list_messages(
     )
     if patient_id:
         stmt = stmt.where(MessageThread.patient_id == patient_id)
-    if not include_archived:
+    if archived_only:
+        stmt = stmt.where(MessageThread.archived.is_(True))
+    elif not include_archived:
         stmt = stmt.where(MessageThread.archived.is_(False))
+    if unread_only:
+        stmt = stmt.where(MessageThread.unread.is_(True))
     stmt = stmt.order_by(Message.sent_at.desc()).limit(200)
     result = await db.execute(stmt)
     return list(result.all())

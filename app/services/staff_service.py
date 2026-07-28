@@ -12,6 +12,7 @@ from app.config import settings
 from app.core import security
 from app.core.staff_context import StaffContext
 from app.models.appointment_types import AppointmentTypeDef
+from app.models.practice import Practice
 from app.models.location import Location
 from app.models.staff import (
     ActivityType,
@@ -91,20 +92,22 @@ async def create_form_access_token(
     location_id: uuid.UUID,
     patient_id: uuid.UUID,
     expires_at: datetime,
-) -> str:
-    """Creates an opaque link token for the patient forms portal and returns the raw value (never stored)."""
+) -> tuple[str, uuid.UUID]:
+    """Creates an opaque link token for the patient forms portal.
+
+    Returns (raw_token, token_id). The raw value is never stored.
+    """
     raw = security.generate_opaque_token()
-    db.add(
-        FormAccessToken(
-            token_hash=security.hash_token(raw),
-            practice_id=practice_id,
-            location_id=location_id,
-            patient_id=patient_id,
-            expires_at=expires_at,
-        )
+    row = FormAccessToken(
+        token_hash=security.hash_token(raw),
+        practice_id=practice_id,
+        location_id=location_id,
+        patient_id=patient_id,
+        expires_at=expires_at,
     )
+    db.add(row)
     await db.flush()
-    return raw
+    return raw, row.id
 
 
 async def _log_activity(
@@ -1187,6 +1190,65 @@ async def list_frequent_form_templates(
     return list(result.scalars().all())
 
 
+async def _deliver_form_intake_notifications(
+    db: AsyncSession,
+    ctx: StaffContext,
+    patient: Patient,
+    *,
+    form_names: str,
+    raw_token: str,
+    intake_mode: str | None = None,
+    custom_sms: str | None = None,
+    custom_email: str | None = None,
+) -> dict[str, str]:
+    """Log SMS + send real email (SES) with form/agent intake link(s)."""
+    from app.services import email_service
+    from app.services.form_intake_links import build_intake_links, format_intake_sms_body
+
+    mode = (intake_mode or settings.agent_default_intake_mode or "agent").strip()
+    links = build_intake_links(raw_token, mode)
+    assistant = settings.ai_assistant_name or "Angelina"
+
+    sms_body = format_intake_sms_body(
+        form_names=form_names,
+        links=links,
+        custom_message=custom_sms,
+        assistant_name=assistant,
+    )
+    await send_message(
+        db, ctx, SendMessageRequest(patient_id=patient.id, body=sms_body, channel="sms")
+    )
+
+    email = (patient.email or "").strip()
+    if email:
+        practice = await db.get(Practice, ctx.practice_id)
+        practice_name = practice.name if practice else "Your clinic"
+        patient_name = patient.preferred_name or patient.first_name or "there"
+        try:
+            email_service.send_form_intake(
+                to=email,
+                patient_name=patient_name,
+                practice_name=practice_name,
+                form_names=form_names,
+                primary_link=links["primary_link"],
+                secondary_link=links.get("secondary_link") or "",
+                intake_mode=links["mode"],
+                assistant_name=assistant,
+                custom_note=custom_email,
+            )
+            email_log = f"{custom_email.strip()}\n{links['primary_link']}" if custom_email and custom_email.strip() else sms_body
+            await send_message(
+                db,
+                ctx,
+                SendMessageRequest(patient_id=patient.id, body=email_log, channel="email"),
+            )
+        except email_service.EmailDeliveryError:
+            # Still logged SMS; email failure should not roll back form request.
+            pass
+
+    return links
+
+
 async def send_form(
     db: AsyncSession, ctx: StaffContext, data: SendFormRequest
 ) -> list[FormRequest]:
@@ -1232,25 +1294,32 @@ async def send_form(
         requests.append(req)
     await db.flush()
 
-    raw_token = await create_form_access_token(
+    raw_token, token_id = await create_form_access_token(
         db, practice_id=ctx.practice_id, location_id=ctx.location_id, patient_id=data.patient_id, expires_at=expires_at
     )
-    link = f"{settings.frontend_url}/forms/{raw_token}"
-
+    for req in requests:
+        req.form_access_token_id = token_id
+    await db.flush()
     names = ", ".join(t.name for t in templates)
-    text = data.message.strip() if data.message and data.message.strip() else f"Please fill out the following form(s): {names}"
-    body = f"{text}\n{link}"
-    await send_message(db, ctx, SendMessageRequest(patient_id=data.patient_id, body=body, channel="sms"))
-    if data.email_note and data.email_note.strip():
-        await send_message(
-            db, ctx, SendMessageRequest(patient_id=data.patient_id, body=f"{data.email_note.strip()}\n{link}", channel="email")
-        )
+    custom_sms = data.message.strip() if data.message and data.message.strip() else None
+    custom_email = data.email_note.strip() if data.email_note and data.email_note.strip() else None
+    links = await _deliver_form_intake_notifications(
+        db,
+        ctx,
+        patient,
+        form_names=names,
+        raw_token=raw_token,
+        intake_mode=data.intake_mode,
+        custom_sms=custom_sms,
+        custom_email=custom_email,
+    )
 
     await _log_activity(
         db,
         patient_id=data.patient_id,
         activity_type=ActivityType.FORM,
         title=f"Form{'s' if len(templates) != 1 else ''} sent — {names}",
+        body=links["primary_link"],
     )
     return requests
 
@@ -1321,19 +1390,22 @@ async def notify_automatic_forms_on_confirmation(
 
     templates = [tpl for _, tpl in rows]
     expires_at = rows[0][0].expires_at
-    raw_token = await create_form_access_token(
+    raw_token, token_id = await create_form_access_token(
         db,
         practice_id=ctx.practice_id,
         location_id=ctx.location_id,
         patient_id=appointment.patient_id,
         expires_at=expires_at,
     )
-    link = f"{settings.frontend_url}/forms/{raw_token}"
+    for req, _tpl in rows:
+        req.form_access_token_id = token_id
+    await db.flush()
     names = ", ".join(t.name for t in templates)
-    body = f"Please fill out the following form(s): {names}\n{link}"
-    await send_message(
-        db, ctx, SendMessageRequest(patient_id=appointment.patient_id, body=body, channel="sms")
-    )
+    patient = await db.get(Patient, appointment.patient_id)
+    if patient:
+        await _deliver_form_intake_notifications(
+            db, ctx, patient, form_names=names, raw_token=raw_token, intake_mode=settings.agent_default_intake_mode
+        )
     await _log_activity(
         db,
         patient_id=appointment.patient_id,
@@ -1432,16 +1504,17 @@ async def evaluate_automatic_form_requests(
 
     expires_at = appointment.starts_at
 
+    new_requests: list[FormRequest] = []
     for tpl in filtered:
-        db.add(
-            FormRequest(
-                practice_id=practice_id,
-                location_id=location_id,
-                patient_id=appointment.patient_id,
-                form_template_id=tpl.id,
-                expires_at=expires_at,
-            )
+        req = FormRequest(
+            practice_id=practice_id,
+            location_id=location_id,
+            patient_id=appointment.patient_id,
+            form_template_id=tpl.id,
+            expires_at=expires_at,
         )
+        db.add(req)
+        new_requests.append(req)
     await db.flush()
 
     if ctx is None:
@@ -1449,16 +1522,18 @@ async def evaluate_automatic_form_requests(
     if appointment.status not in (AppointmentStatus.CONFIRMED, AppointmentStatus.CHECKED_IN):
         return
 
-    raw_token = await create_form_access_token(
+    raw_token, token_id = await create_form_access_token(
         db, practice_id=practice_id, location_id=location_id, patient_id=appointment.patient_id, expires_at=expires_at
     )
-    link = f"{settings.frontend_url}/forms/{raw_token}"
-
+    for req in new_requests:
+        req.form_access_token_id = token_id
+    await db.flush()
     names = ", ".join(t.name for t in filtered)
-    body = f"Please fill out the following form(s): {names}\n{link}"
-    await send_message(
-        db, ctx, SendMessageRequest(patient_id=appointment.patient_id, body=body, channel="sms")
-    )
+    patient = await db.get(Patient, appointment.patient_id)
+    if patient and ctx is not None:
+        await _deliver_form_intake_notifications(
+            db, ctx, patient, form_names=names, raw_token=raw_token, intake_mode=settings.agent_default_intake_mode
+        )
     await _log_activity(
         db,
         patient_id=appointment.patient_id,
@@ -1586,6 +1661,23 @@ async def archive_form_requests(db: AsyncSession, ctx: StaffContext, request_ids
     now = _now()
     for req in requests:
         req.archived_at = now
+    await db.flush()
+
+
+async def delete_form_requests(db: AsyncSession, ctx: StaffContext, request_ids: list[uuid.UUID]) -> None:
+    """Permanently remove form requests (and cascaded submissions / agent sessions)."""
+    result = await db.execute(
+        select(FormRequest).where(
+            FormRequest.id.in_(request_ids),
+            FormRequest.practice_id == ctx.practice_id,
+            FormRequest.location_id == ctx.location_id,
+        )
+    )
+    requests = result.scalars().all()
+    if len(requests) != len(set(request_ids)):
+        raise ValueError("Some form requests could not be found")
+    for req in requests:
+        await db.delete(req)
     await db.flush()
 
 

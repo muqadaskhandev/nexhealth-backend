@@ -55,7 +55,7 @@ async def verify(
     if patient is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="We couldn't verify your information — check your last name and date of birth.")
 
-    forms = await public_forms_service.list_pending_forms(db, patient)
+    forms = await public_forms_service.list_pending_forms(db, patient, token_row)
     branding = await public_forms_service.get_branding(db, token_row)
     return PublicVerifyOut(
         patient_name=f"{patient.first_name} {patient.last_name}".strip(),

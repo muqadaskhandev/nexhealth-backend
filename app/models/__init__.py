@@ -3,6 +3,7 @@
 Importing this package ensures every model is registered on Base.metadata,
 which Alembic autogenerate and create_all rely on.
 """
+from app.models.agent import AgentAnswer, AgentAuditLog, AgentReview, AgentSession, AgentTurn
 from app.models.appointment_types import AppointmentTypeDef, InsertionRule, MappingRule, PatientTypeRule
 from app.models.booking_form import BookingFieldType, BookingFormField, BookingInsurance
 from app.models.ehr_connection import ConnectionMode, EhrConnection, EhrSyncLog

@@ -117,6 +117,17 @@ class Settings(BaseSettings):
     open_dental_developer_key: str = ""
     open_dental_api_base_url: str = "https://api.opendental.com"
 
+    # Conversational intake agent (Milestone 3)
+    agent_enabled: bool = True
+    openai_api_key: str = ""
+    openai_model: str = "gpt-4o-mini"
+    # Azure OpenAI (preferred when O3_ACCESS_TOKEN + O3_BASE_URI are set)
+    o3_access_token: str = ""
+    o3_base_uri: str = ""
+    azure_openai_api_version: str = "2024-12-01-preview"
+    ai_assistant_name: str = "Angelina"
+    agent_default_intake_mode: str = "agent"  # form | agent | both
+
     @property
     def cors_origins(self) -> list[str]:
         return [o.strip() for o in self.cors_origins_raw.split(",") if o.strip()]

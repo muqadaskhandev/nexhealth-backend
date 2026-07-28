@@ -97,7 +97,9 @@ async def verify_patient(db: AsyncSession, token: FormAccessToken, last_name: st
     return patient
 
 
-async def list_pending_forms(db: AsyncSession, patient: Patient) -> list[dict]:
+async def list_pending_forms(
+    db: AsyncSession, patient: Patient, token_row: FormAccessToken | None = None
+) -> list[dict]:
     now = _now()
     result = await db.execute(
         select(FormRequest, FormTemplate)
@@ -108,7 +110,24 @@ async def list_pending_forms(db: AsyncSession, patient: Patient) -> list[dict]:
         )
         .order_by(FormTemplate.name.asc())
     )
-    rows = result.all()
+    rows = list(result.all())
+
+    if token_row is not None:
+        linked = [(req, tpl) for req, tpl in rows if req.form_access_token_id == token_row.id]
+        if linked:
+            rows = linked
+        else:
+            # Legacy sends before token linking: match requests created near this token.
+            window_start = token_row.created_at - timedelta(seconds=5)
+            window_end = token_row.created_at + timedelta(minutes=2)
+            legacy = [
+                (req, tpl)
+                for req, tpl in rows
+                if req.form_access_token_id is None and window_start <= req.sent_at <= window_end
+            ]
+            if legacy:
+                rows = legacy
+
     out: list[dict] = []
     for req, tpl in rows:
         completed = req.status == FormRequestStatus.COMPLETED
@@ -190,7 +209,14 @@ async def get_prior_medical_history_answers(
 
 
 async def submit_form(
-    db: AsyncSession, patient: Patient, form_request_id: uuid.UUID, answers: dict
+    db: AsyncSession,
+    patient: Patient,
+    form_request_id: uuid.UUID,
+    answers: dict,
+    *,
+    intake_source: str = "web",
+    ai_generated: bool = False,
+    agent_session_id: uuid.UUID | None = None,
 ) -> int:
     result = await db.execute(
         select(FormRequest).where(
@@ -217,11 +243,19 @@ async def submit_form(
             patient_id=patient.id,
             form_name=tpl.name if tpl else "",
             device="web",
+            intake_source=intake_source,
+            ai_generated=ai_generated,
+            agent_session_id=agent_session_id,
             sync_status="complete",
             answers=answers,
         )
     )
     await db.flush()
+
+    if tpl and answers:
+        from app.services.sync_target_service import apply_sync_targets
+        apply_sync_targets(patient, tpl.fields or [], answers)
+
     await apply_sync_outcome(db, req, patient)
 
     await _log_activity(
@@ -241,6 +275,16 @@ async def submit_form(
         )
     )
     remaining = len(result.scalars().all())
+
+    from app.services.form_completion_service import sync_patient_forms_status
+
+    await sync_patient_forms_status(
+        db,
+        patient_id=patient.id,
+        location_id=req.location_id,
+        remaining_pending_forms=remaining,
+    )
+
     return remaining
 
 

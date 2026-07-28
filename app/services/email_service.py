@@ -113,3 +113,46 @@ def send_password_reset(*, to: str, reset_url: str) -> None:
     text = f"Reset your password: {reset_url}\n"
     html = f'<p><a href="{reset_url}">Reset your password</a></p>'
     send_email(to=to, subject=subject, html=html, text=text)
+
+
+def send_form_intake(
+    *,
+    to: str,
+    patient_name: str,
+    practice_name: str,
+    form_names: str,
+    primary_link: str,
+    secondary_link: str = "",
+    intake_mode: str = "agent",
+    assistant_name: str = "Angelina",
+    custom_note: str | None = None,
+) -> None:
+    """Email patient a form or chat-intake link (SES when enabled)."""
+    if intake_mode == "agent":
+        subject = f"Complete your intake — {practice_name}"
+        cta = f"Chat with {assistant_name}"
+        intro = custom_note.strip() if custom_note and custom_note.strip() else (
+            f"Hi {patient_name},\n\n{assistant_name} will guide you through: {form_names}."
+        )
+    elif intake_mode == "both":
+        subject = f"Complete your forms — {practice_name}"
+        cta = f"Start chat with {assistant_name}"
+        intro = custom_note.strip() if custom_note and custom_note.strip() else (
+            f"Hi {patient_name},\n\nPlease complete: {form_names}. "
+            f"You can chat with {assistant_name} or use the classic form."
+        )
+    else:
+        subject = f"Forms to complete — {practice_name}"
+        cta = "Open forms"
+        intro = custom_note.strip() if custom_note and custom_note.strip() else (
+            f"Hi {patient_name},\n\nPlease complete the following form(s): {form_names}."
+        )
+
+    text = f"{intro}\n\n{cta}: {primary_link}\n"
+    html_parts = [f"<p>{intro.replace(chr(10), '<br/>')}</p>", f'<p><a href="{primary_link}">{cta}</a></p>']
+    if secondary_link:
+        text += f"\nClassic form: {secondary_link}\n"
+        html_parts.append(f'<p><a href="{secondary_link}">Open classic form</a></p>')
+    html = "\n".join(html_parts)
+    send_email(to=to, subject=subject, html=html, text=text)
+

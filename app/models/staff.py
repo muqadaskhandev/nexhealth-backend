@@ -261,6 +261,9 @@ class FormRequest(Base):
     viewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     sync_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
     synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    form_access_token_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("form_access_tokens.id", ondelete="SET NULL"), nullable=True, index=True
+    )
 
 
 class FormSubmission(Base):
@@ -273,6 +276,11 @@ class FormSubmission(Base):
     patient_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("patients.id", ondelete="CASCADE"))
     form_name: Mapped[str] = mapped_column(String(200), nullable=False)
     device: Mapped[str] = mapped_column(String(80), nullable=False, default="web")
+    intake_source: Mapped[str] = mapped_column(String(20), nullable=False, default="web")
+    ai_generated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    agent_session_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("agent_sessions.id", ondelete="SET NULL"), nullable=True
+    )
     sync_status: Mapped[str] = mapped_column(String(40), nullable=False, default="complete")
     answers: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     submitted_at: Mapped[datetime] = mapped_column(

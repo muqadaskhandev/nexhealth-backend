@@ -335,6 +335,10 @@ class ArchiveFormRequestsRequest(BaseModel):
     request_ids: list[uuid.UUID] = Field(min_length=1)
 
 
+class DeleteFormRequestsRequest(BaseModel):
+    request_ids: list[uuid.UUID] = Field(min_length=1)
+
+
 class SyncFormRequestsRequest(BaseModel):
     request_ids: list[uuid.UUID] = Field(min_length=1)
 
@@ -343,6 +347,9 @@ class FormSubmissionDetailOut(BaseModel):
     form_name: str
     answers: dict[str, Any]
     submitted_at: datetime
+    intake_source: str = "web"
+    ai_generated: bool = False
+    agent_session_id: uuid.UUID | None = None
 
 
 class FormSubmissionOut(BaseModel):
@@ -352,6 +359,8 @@ class FormSubmissionOut(BaseModel):
     patient_id: uuid.UUID
     form_name: str
     device: str
+    intake_source: str = "web"
+    ai_generated: bool = False
     sync_status: str
     submitted_at: datetime
     patient_name: str = ""
@@ -364,6 +373,7 @@ class SendFormRequest(BaseModel):
     expires_at: datetime | None = None
     message: str | None = None
     email_note: str | None = None
+    intake_mode: str = "agent"  # form | agent | both
 
 
 class MessageOut(BaseModel):

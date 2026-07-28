@@ -11,6 +11,7 @@ from app.core.dependencies import require_admin
 from app.core.staff_context import StaffContext, get_staff_context
 from app.database import get_db
 from app.models.user import User
+from app.schemas.public_agent import AgentSessionDetailOut
 from app.schemas.staff import (
     ActivityOut,
     AppointmentCreate,
@@ -40,6 +41,7 @@ from app.schemas.staff import (
     PaymentLinkOut,
     ArchiveFormRequestsRequest,
     AssignPublicPacketSubmissionRequest,
+    DeleteFormRequestsRequest,
     PublicPacketSubmissionOut,
     ReactivateFormRequestsRequest,
     SendFormRequest,
@@ -745,7 +747,11 @@ async def send_form(
     except ValueError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
     await db.commit()
-    return {"message": "Form(s) sent to patient", "count": len(requests)}
+    return {
+        "message": "Form(s) sent to patient",
+        "count": len(requests),
+        "intake_mode": payload.intake_mode,
+    }
 
 
 @router.get("/api/forms/requests", response_model=list[FormRequestBatchOut])
@@ -788,6 +794,20 @@ async def archive_form_requests(
     return {"message": "Form request archived"}
 
 
+@router.post("/api/forms/requests/delete")
+async def delete_form_requests(
+    payload: DeleteFormRequestsRequest,
+    ctx: StaffContext = Depends(get_staff_context),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        await staff_service.delete_form_requests(db, ctx, payload.request_ids)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+    await db.commit()
+    return {"message": "Form request permanently deleted"}
+
+
 @router.post("/api/forms/requests/sync")
 async def sync_form_requests(
     payload: SyncFormRequestsRequest,
@@ -823,7 +843,35 @@ async def form_request_submissions(
     db: AsyncSession = Depends(get_db),
 ):
     rows = await staff_service.get_form_request_submissions(db, ctx, request_ids)
-    return [FormSubmissionDetailOut(form_name=r.form_name, answers=r.answers, submitted_at=r.submitted_at) for r in rows]
+    return [
+        FormSubmissionDetailOut(
+            form_name=r.form_name,
+            answers=r.answers,
+            submitted_at=r.submitted_at,
+            intake_source=getattr(r, "intake_source", "web"),
+            ai_generated=getattr(r, "ai_generated", False),
+            agent_session_id=getattr(r, "agent_session_id", None),
+        )
+        for r in rows
+    ]
+
+
+@router.get("/api/forms/agent-sessions/{session_id}", response_model=AgentSessionDetailOut)
+async def get_agent_session_detail(
+    session_id: uuid.UUID,
+    ctx: StaffContext = Depends(get_staff_context),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.models.agent import AgentSession
+    from app.services import agent_service
+
+    session = await db.get(AgentSession, session_id)
+    if session is None or session.practice_id != ctx.practice_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Session not found")
+    detail = await agent_service.get_session_detail(db, session_id)
+    if detail is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Session not found")
+    return AgentSessionDetailOut(**detail)
 
 
 # ── Communications ───────────────────────────────────────────────────────────

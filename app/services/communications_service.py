@@ -14,6 +14,7 @@ from app.models.appointment_types import AppointmentTypeDef
 from app.models.communications import (
     CommunicationTemplate,
     CommunicationTemplateStep,
+    SavedResponse,
     TemplateAutomationSend,
     TemplateCategory,
     TemplateConfiguration,
@@ -23,6 +24,8 @@ from app.models.location import Location
 from app.models.staff import Appointment, Patient
 from app.schemas.communications import (
     CommunicationTemplateUpdate,
+    SavedResponseCreate,
+    SavedResponseUpdate,
     TemplateAppointmentTypeStatus,
     TemplateConfigurationUpdate,
     TemplateStepCreate,
@@ -866,3 +869,135 @@ async def list_template_history(
         stmt = stmt.where(TemplateAutomationSend.sent_at <= end)
 
     return list(await db.scalars(stmt.limit(200)))
+
+
+_DEFAULT_SAVED_RESPONSES = [
+    {
+        "title": "Appointment Rescheduled",
+        "body": (
+            "Hi {{PATIENT_FIRST_NAME}}, your appointment has been rescheduled. "
+            "Reply if you have any questions — {{LOCATION_PHONE}}"
+        ),
+    },
+    {
+        "title": "APPT",
+        "body": "Hi {{PATIENT_FIRST_NAME}}, here are your appointment details. See you soon!",
+    },
+    {
+        "title": "APPT TIME",
+        "body": "Hi {{PATIENT_FIRST_NAME}}, just confirming your upcoming visit.",
+    },
+]
+
+
+async def list_saved_responses(
+    db: AsyncSession, ctx: StaffContext, *, q: str | None = None
+) -> list[SavedResponse]:
+    """Responses owned by this location or shared with it."""
+    loc_id = str(ctx.location_id)
+    rows = list(
+        await db.scalars(
+            select(SavedResponse)
+            .where(SavedResponse.practice_id == ctx.practice_id)
+            .order_by(SavedResponse.title.asc())
+        )
+    )
+    visible: list[SavedResponse] = []
+    for row in rows:
+        shared = [str(x) for x in (row.shared_location_ids or [])]
+        if row.location_id == ctx.location_id or loc_id in shared:
+            visible.append(row)
+
+    owned = [r for r in rows if r.location_id == ctx.location_id]
+    if not owned:
+        # Seed defaults for this location on first visit
+        seeded: list[SavedResponse] = []
+        for spec in _DEFAULT_SAVED_RESPONSES:
+            row = SavedResponse(
+                practice_id=ctx.practice_id,
+                location_id=ctx.location_id,
+                title=spec["title"],
+                body=spec["body"],
+                shared_location_ids=[],
+            )
+            db.add(row)
+            seeded.append(row)
+        await db.commit()
+        for row in seeded:
+            await db.refresh(row)
+        visible = seeded + [r for r in visible if r.location_id != ctx.location_id]
+
+    if q and q.strip():
+        needle = q.strip().lower()
+        visible = [
+            r
+            for r in visible
+            if needle in r.title.lower() or needle in (r.body or "").lower()
+        ]
+    return visible
+
+
+async def create_saved_response(
+    db: AsyncSession, ctx: StaffContext, data: SavedResponseCreate
+) -> SavedResponse:
+    shared = [lid for lid in data.shared_location_ids if lid != ctx.location_id]
+    row = SavedResponse(
+        practice_id=ctx.practice_id,
+        location_id=ctx.location_id,
+        title=data.title.strip(),
+        body=data.body or "",
+        shared_location_ids=[str(x) for x in shared],
+    )
+    db.add(row)
+    await db.commit()
+    await db.refresh(row)
+    return row
+
+
+async def _get_saved_response(
+    db: AsyncSession, ctx: StaffContext, response_id: uuid.UUID
+) -> SavedResponse:
+    row = await db.scalar(
+        select(SavedResponse).where(
+            SavedResponse.id == response_id,
+            SavedResponse.practice_id == ctx.practice_id,
+        )
+    )
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Saved response not found")
+    # Only owner location can edit/delete
+    if row.location_id != ctx.location_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the owning location can edit this saved response",
+        )
+    return row
+
+
+async def update_saved_response(
+    db: AsyncSession,
+    ctx: StaffContext,
+    response_id: uuid.UUID,
+    data: SavedResponseUpdate,
+) -> SavedResponse:
+    row = await _get_saved_response(db, ctx, response_id)
+    payload = data.model_dump(exclude_unset=True)
+    if "title" in payload and payload["title"] is not None:
+        row.title = payload["title"].strip()
+    if "body" in payload and payload["body"] is not None:
+        row.body = payload["body"]
+    if "shared_location_ids" in payload and payload["shared_location_ids"] is not None:
+        row.shared_location_ids = [
+            str(x) for x in payload["shared_location_ids"] if x != ctx.location_id
+        ]
+    await db.commit()
+    await db.refresh(row)
+    return row
+
+
+async def delete_saved_response(
+    db: AsyncSession, ctx: StaffContext, response_id: uuid.UUID
+) -> None:
+    row = await _get_saved_response(db, ctx, response_id)
+    await db.delete(row)
+    await db.commit()

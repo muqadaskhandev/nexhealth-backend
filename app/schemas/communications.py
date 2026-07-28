@@ -172,3 +172,27 @@ class TemplateAutomationHistoryOut(BaseModel):
     sent_at: datetime
     provider_name: str
     appointment_at: datetime | None = None
+
+
+class SavedResponseOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    location_id: uuid.UUID
+    title: str
+    body: str
+    shared_location_ids: list[uuid.UUID] = Field(default_factory=list)
+    created_at: datetime
+    updated_at: datetime
+
+
+class SavedResponseCreate(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+    body: str = Field(default="", max_length=5000)
+    shared_location_ids: list[uuid.UUID] = Field(default_factory=list)
+
+
+class SavedResponseUpdate(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    body: str | None = Field(default=None, max_length=5000)
+    shared_location_ids: list[uuid.UUID] | None = None

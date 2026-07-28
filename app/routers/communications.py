@@ -17,6 +17,9 @@ from app.schemas.communications import (
     MessageGroupingPreviewRequest,
     OtherTemplateDedupeOut,
     OtherTemplateDedupeRequest,
+    SavedResponseCreate,
+    SavedResponseOut,
+    SavedResponseUpdate,
     TemplateAppointmentTypeStatus,
     TemplateAutomationHistoryOut,
     TemplateConfigurationOut,
@@ -378,3 +381,65 @@ async def other_template_dedupe(
         reason=decision.reason,
         confirm_applies_to_all_mentioned=decision.confirm_applies_to_all_mentioned,
     )
+
+
+def _saved_response_out(row) -> SavedResponseOut:
+    shared: list[uuid.UUID] = []
+    for raw in row.shared_location_ids or []:
+        try:
+            shared.append(uuid.UUID(str(raw)))
+        except ValueError:
+            continue
+    return SavedResponseOut(
+        id=row.id,
+        location_id=row.location_id,
+        title=row.title,
+        body=row.body or "",
+        shared_location_ids=shared,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )
+
+
+@router.get("/api/saved-responses", response_model=list[SavedResponseOut])
+async def list_saved_responses(
+    q: str | None = Query(default=None),
+    db: AsyncSession = Depends(get_db),
+    ctx: StaffContext = Depends(get_staff_context),
+):
+    rows = await svc.list_saved_responses(db, ctx, q=q)
+    return [_saved_response_out(r) for r in rows]
+
+
+@router.post(
+    "/api/saved-responses",
+    response_model=SavedResponseOut,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_saved_response(
+    body: SavedResponseCreate,
+    db: AsyncSession = Depends(get_db),
+    ctx: StaffContext = Depends(get_staff_context),
+):
+    row = await svc.create_saved_response(db, ctx, body)
+    return _saved_response_out(row)
+
+
+@router.patch("/api/saved-responses/{response_id}", response_model=SavedResponseOut)
+async def update_saved_response(
+    response_id: uuid.UUID,
+    body: SavedResponseUpdate,
+    db: AsyncSession = Depends(get_db),
+    ctx: StaffContext = Depends(get_staff_context),
+):
+    row = await svc.update_saved_response(db, ctx, response_id, body)
+    return _saved_response_out(row)
+
+
+@router.delete("/api/saved-responses/{response_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_saved_response(
+    response_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    ctx: StaffContext = Depends(get_staff_context),
+):
+    await svc.delete_saved_response(db, ctx, response_id)

@@ -18,6 +18,8 @@ from app.models.communications import (
     CommunicationTemplateStep,
     OutOfOfficeSettings,
     SavedResponse,
+    SmsRegistration,
+    SmsRegistrationStatus,
     TemplateAutomationSend,
     TemplateCategory,
     TemplateConfiguration,
@@ -30,6 +32,8 @@ from app.schemas.communications import (
     OutOfOfficeSettingsUpdate,
     SavedResponseCreate,
     SavedResponseUpdate,
+    SmsRegistrationStatusUpdate,
+    SmsRegistrationUpdate,
     TemplateAppointmentTypeStatus,
     TemplateConfigurationUpdate,
     TemplateStepCreate,
@@ -1166,3 +1170,171 @@ async def get_effective_ooo_for_location(
         if loc in [str(x) for x in (row.shared_location_ids or [])]:
             return row
     return own  # may be disabled; caller checks enabled
+
+
+_SMS_FORM_FIELDS = (
+    "legal_business_name",
+    "ein",
+    "dba_name",
+    "business_type",
+    "business_address",
+    "business_city",
+    "business_state",
+    "business_zip",
+    "business_phone",
+    "business_website",
+    "auth_rep_name",
+    "auth_rep_email",
+    "auth_rep_phone",
+    "auth_rep_title",
+    "office_phone_number",
+)
+
+
+async def _ensure_sms_registration(db: AsyncSession, ctx: StaffContext) -> SmsRegistration:
+    row = await db.scalar(
+        select(SmsRegistration).where(
+            SmsRegistration.practice_id == ctx.practice_id,
+            SmsRegistration.location_id == ctx.location_id,
+        )
+    )
+    if row is not None:
+        return row
+
+    location = await db.scalar(select(Location).where(Location.id == ctx.location_id))
+    row = SmsRegistration(
+        practice_id=ctx.practice_id,
+        location_id=ctx.location_id,
+        status=SmsRegistrationStatus.NOT_STARTED.value,
+        legal_business_name=(location.name if location else "") or "",
+        business_address=(location.address if location else "") or "",
+        business_city=(location.city if location else "") or "",
+        business_state=(location.state if location else "") or "",
+        business_zip=(location.zip_code if location else "") or "",
+        business_phone=(location.phone if location else "") or "",
+        office_phone_number=(location.phone if location else "") or "",
+    )
+    db.add(row)
+    await db.commit()
+    await db.refresh(row)
+    return row
+
+
+async def get_sms_registration(db: AsyncSession, ctx: StaffContext) -> SmsRegistration:
+    return await _ensure_sms_registration(db, ctx)
+
+
+async def is_sms_registration_approved(
+    db: AsyncSession, practice_id: uuid.UUID, location_id: uuid.UUID
+) -> bool:
+    row = await db.scalar(
+        select(SmsRegistration).where(
+            SmsRegistration.practice_id == practice_id,
+            SmsRegistration.location_id == location_id,
+        )
+    )
+    return row is not None and row.status == SmsRegistrationStatus.APPROVED.value
+
+
+async def update_sms_registration(
+    db: AsyncSession, ctx: StaffContext, data: SmsRegistrationUpdate
+) -> SmsRegistration:
+    row = await _ensure_sms_registration(db, ctx)
+    if row.status == SmsRegistrationStatus.IN_PROGRESS.value:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Registration is In Progress and cannot be edited until review completes",
+        )
+    if row.status == SmsRegistrationStatus.APPROVED.value:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Registration is already approved",
+        )
+
+    payload = data.model_dump(exclude_unset=True)
+    for key in _SMS_FORM_FIELDS:
+        if key in payload and payload[key] is not None:
+            setattr(row, key, str(payload[key]).strip())
+    if "request_office_number_hosting" in payload and payload["request_office_number_hosting"] is not None:
+        row.request_office_number_hosting = bool(payload["request_office_number_hosting"])
+
+    if row.status == SmsRegistrationStatus.FAILED.value:
+        # Editing a failed registration keeps failed until resubmit
+        pass
+    elif row.status == SmsRegistrationStatus.NOT_STARTED.value:
+        # Stay not_started until explicit submit
+        pass
+
+    await db.commit()
+    await db.refresh(row)
+    return row
+
+
+async def submit_sms_registration(db: AsyncSession, ctx: StaffContext) -> SmsRegistration:
+    row = await _ensure_sms_registration(db, ctx)
+    if row.status == SmsRegistrationStatus.APPROVED.value:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Registration is already approved"
+        )
+    if row.status == SmsRegistrationStatus.IN_PROGRESS.value:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Registration is already In Progress",
+        )
+
+    required = {
+        "legal_business_name": row.legal_business_name,
+        "ein": row.ein,
+        "business_address": row.business_address,
+        "business_city": row.business_city,
+        "business_state": row.business_state,
+        "business_zip": row.business_zip,
+        "business_phone": row.business_phone,
+        "auth_rep_name": row.auth_rep_name,
+        "auth_rep_email": row.auth_rep_email,
+        "auth_rep_phone": row.auth_rep_phone,
+        "auth_rep_title": row.auth_rep_title,
+    }
+    missing = [k for k, v in required.items() if not (v or "").strip()]
+    if missing:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Complete required fields before submitting: {', '.join(missing)}",
+        )
+
+    row.status = SmsRegistrationStatus.IN_PROGRESS.value
+    row.submitted_at = datetime.now(timezone.utc)
+    row.reviewed_at = None
+    row.failure_reason = ""
+    await db.commit()
+    await db.refresh(row)
+    return row
+
+
+async def set_sms_registration_status(
+    db: AsyncSession, ctx: StaffContext, data: SmsRegistrationStatusUpdate
+) -> SmsRegistration:
+    """Demo helper to approve/fail a registration under review."""
+    row = await _ensure_sms_registration(db, ctx)
+    status_val = data.status
+    if status_val == SmsRegistrationStatus.APPROVED.value:
+        row.status = SmsRegistrationStatus.APPROVED.value
+        row.failure_reason = ""
+        row.reviewed_at = datetime.now(timezone.utc)
+    elif status_val == SmsRegistrationStatus.FAILED.value:
+        row.status = SmsRegistrationStatus.FAILED.value
+        row.failure_reason = (
+            (data.failure_reason or "").strip()
+            or "Business details could not be verified. Confirm your full legal business name and EIN match your tax documentation, then resubmit."
+        )
+        row.reviewed_at = datetime.now(timezone.utc)
+    elif status_val == SmsRegistrationStatus.IN_PROGRESS.value:
+        row.status = SmsRegistrationStatus.IN_PROGRESS.value
+        row.failure_reason = ""
+        if row.submitted_at is None:
+            row.submitted_at = datetime.now(timezone.utc)
+    else:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid status")
+    await db.commit()
+    await db.refresh(row)
+    return row

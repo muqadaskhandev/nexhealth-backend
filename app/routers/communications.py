@@ -24,6 +24,9 @@ from app.schemas.communications import (
     SavedResponseUpdate,
     ServiceHoursDay,
     CustomDateHours,
+    SmsRegistrationOut,
+    SmsRegistrationStatusUpdate,
+    SmsRegistrationUpdate,
     TemplateAppointmentTypeStatus,
     TemplateAutomationHistoryOut,
     TemplateConfigurationOut,
@@ -506,3 +509,71 @@ async def update_out_of_office(
 ):
     row = await svc.update_out_of_office_settings(db, ctx, body)
     return _ooo_out(row)
+
+
+def _sms_registration_out(row) -> SmsRegistrationOut:
+    return SmsRegistrationOut(
+        id=row.id,
+        location_id=row.location_id,
+        status=row.status,
+        legal_business_name=row.legal_business_name or "",
+        ein=row.ein or "",
+        dba_name=row.dba_name or "",
+        business_type=row.business_type or "",
+        business_address=row.business_address or "",
+        business_city=row.business_city or "",
+        business_state=row.business_state or "",
+        business_zip=row.business_zip or "",
+        business_phone=row.business_phone or "",
+        business_website=row.business_website or "",
+        auth_rep_name=row.auth_rep_name or "",
+        auth_rep_email=row.auth_rep_email or "",
+        auth_rep_phone=row.auth_rep_phone or "",
+        auth_rep_title=row.auth_rep_title or "",
+        request_office_number_hosting=bool(row.request_office_number_hosting),
+        office_phone_number=row.office_phone_number or "",
+        failure_reason=row.failure_reason or "",
+        submitted_at=row.submitted_at,
+        reviewed_at=row.reviewed_at,
+        updated_at=row.updated_at,
+        sms_enabled=row.status == "approved",
+    )
+
+
+@router.get("/api/sms-registration", response_model=SmsRegistrationOut)
+async def get_sms_registration(
+    db: AsyncSession = Depends(get_db),
+    ctx: StaffContext = Depends(get_staff_context),
+):
+    row = await svc.get_sms_registration(db, ctx)
+    return _sms_registration_out(row)
+
+
+@router.patch("/api/sms-registration", response_model=SmsRegistrationOut)
+async def update_sms_registration(
+    body: SmsRegistrationUpdate,
+    db: AsyncSession = Depends(get_db),
+    ctx: StaffContext = Depends(get_staff_context),
+):
+    row = await svc.update_sms_registration(db, ctx, body)
+    return _sms_registration_out(row)
+
+
+@router.post("/api/sms-registration/submit", response_model=SmsRegistrationOut)
+async def submit_sms_registration(
+    db: AsyncSession = Depends(get_db),
+    ctx: StaffContext = Depends(get_staff_context),
+):
+    row = await svc.submit_sms_registration(db, ctx)
+    return _sms_registration_out(row)
+
+
+@router.post("/api/sms-registration/status", response_model=SmsRegistrationOut)
+async def set_sms_registration_status(
+    body: SmsRegistrationStatusUpdate,
+    db: AsyncSession = Depends(get_db),
+    ctx: StaffContext = Depends(get_staff_context),
+):
+    """Demo: approve or fail a registration under review."""
+    row = await svc.set_sms_registration_status(db, ctx, body)
+    return _sms_registration_out(row)

@@ -230,3 +230,60 @@ class OutOfOfficeSettings(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
     )
+
+
+class SmsRegistrationStatus(str, enum.Enum):
+    NOT_STARTED = "not_started"
+    IN_PROGRESS = "in_progress"
+    APPROVED = "approved"
+    FAILED = "failed"
+
+
+class SmsRegistration(Base):
+    """A2P / compliance business registration for sending patient SMS."""
+
+    __tablename__ = "sms_registrations"
+    __table_args__ = (UniqueConstraint("location_id", name="uq_sms_registration_location"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    practice_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("practices.id", ondelete="CASCADE"), index=True
+    )
+    location_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("locations.id", ondelete="CASCADE"), index=True
+    )
+    status: Mapped[str] = mapped_column(
+        String(30), nullable=False, default=SmsRegistrationStatus.NOT_STARTED.value
+    )
+
+    # Business details (must match tax documentation)
+    legal_business_name: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    ein: Mapped[str] = mapped_column(String(20), nullable=False, default="")
+    dba_name: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    business_type: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+    business_address: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    business_city: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+    business_state: Mapped[str] = mapped_column(String(50), nullable=False, default="")
+    business_zip: Mapped[str] = mapped_column(String(20), nullable=False, default="")
+    business_phone: Mapped[str] = mapped_column(String(40), nullable=False, default="")
+    business_website: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+
+    # Authorized representative (carrier may contact to verify)
+    auth_rep_name: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    auth_rep_email: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    auth_rep_phone: Mapped[str] = mapped_column(String(40), nullable=False, default="")
+    auth_rep_title: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+
+    # Optional: request hosting office number for SMS
+    request_office_number_hosting: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    office_phone_number: Mapped[str] = mapped_column(String(40), nullable=False, default="")
+
+    failure_reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )

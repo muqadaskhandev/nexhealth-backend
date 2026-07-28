@@ -235,3 +235,59 @@ class OutOfOfficeSettingsUpdate(BaseModel):
     service_hours: list[ServiceHoursDay] | None = None
     custom_dates: list[CustomDateHours] | None = None
     shared_location_ids: list[uuid.UUID] | None = None
+
+
+class SmsRegistrationOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    location_id: uuid.UUID
+    status: str
+    legal_business_name: str
+    ein: str
+    dba_name: str
+    business_type: str
+    business_address: str
+    business_city: str
+    business_state: str
+    business_zip: str
+    business_phone: str
+    business_website: str
+    auth_rep_name: str
+    auth_rep_email: str
+    auth_rep_phone: str
+    auth_rep_title: str
+    request_office_number_hosting: bool
+    office_phone_number: str
+    failure_reason: str
+    submitted_at: datetime | None = None
+    reviewed_at: datetime | None = None
+    updated_at: datetime
+    # True when patient SMS can be delivered for this location
+    sms_enabled: bool = False
+
+
+class SmsRegistrationUpdate(BaseModel):
+    legal_business_name: str | None = Field(default=None, max_length=300)
+    ein: str | None = Field(default=None, max_length=20)
+    dba_name: str | None = Field(default=None, max_length=300)
+    business_type: str | None = Field(default=None, max_length=100)
+    business_address: str | None = Field(default=None, max_length=300)
+    business_city: str | None = Field(default=None, max_length=100)
+    business_state: str | None = Field(default=None, max_length=50)
+    business_zip: str | None = Field(default=None, max_length=20)
+    business_phone: str | None = Field(default=None, max_length=40)
+    business_website: str | None = Field(default=None, max_length=300)
+    auth_rep_name: str | None = Field(default=None, max_length=200)
+    auth_rep_email: str | None = Field(default=None, max_length=200)
+    auth_rep_phone: str | None = Field(default=None, max_length=40)
+    auth_rep_title: str | None = Field(default=None, max_length=200)
+    request_office_number_hosting: bool | None = None
+    office_phone_number: str | None = Field(default=None, max_length=40)
+
+
+class SmsRegistrationStatusUpdate(BaseModel):
+    """Demo/admin: set review outcome (approve or fail)."""
+
+    status: str = Field(pattern="^(approved|failed|in_progress)$")
+    failure_reason: str | None = Field(default=None, max_length=2000)

@@ -14,6 +14,7 @@ from app.models.communications import (
     TemplateAutomationSend,
     SavedResponse,
     OutOfOfficeSettings,
+    SmsRegistration,
 )
 from app.models.ehr_connection import ConnectionMode, EhrConnection, EhrSyncLog
 from app.models.invite import InviteToken, InviteType

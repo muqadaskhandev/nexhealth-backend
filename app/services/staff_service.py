@@ -1797,6 +1797,15 @@ async def send_message(
         thread.archived = False
 
     delivery_status, failure_reason = _manual_delivery_outcome(patient, data.channel)
+    if delivery_status == "delivered" and data.channel == "sms":
+        from app.services import communications_service as comm_svc
+
+        approved = await comm_svc.is_sms_registration_approved(
+            db, ctx.practice_id, ctx.location_id
+        )
+        if not approved:
+            delivery_status = "failed"
+            failure_reason = "SMS registration incomplete"
     display_body = body or f"[Attachment: {attachment}]"
     msg = Message(
         thread_id=thread.id,

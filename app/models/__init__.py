@@ -13,6 +13,7 @@ from app.models.communications import (
     TemplateStepKind,
     TemplateAutomationSend,
     SavedResponse,
+    OutOfOfficeSettings,
 )
 from app.models.ehr_connection import ConnectionMode, EhrConnection, EhrSyncLog
 from app.models.invite import InviteToken, InviteType

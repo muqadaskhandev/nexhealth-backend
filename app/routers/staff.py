@@ -46,6 +46,7 @@ from app.schemas.staff import (
     ReactivateFormRequestsRequest,
     SendFormRequest,
     SendMessageRequest,
+    InboundMessageRequest,
     SyncFormRequestsRequest,
     VerifyInsuranceRequest,
     AsapListCreate,
@@ -879,6 +880,29 @@ async def send_message(
     msg = await staff_service.send_message(db, ctx, payload)
     patient = await staff_service.get_patient(db, ctx, payload.patient_id)
     # Reload thread for unread/archived flags
+    from sqlalchemy import select
+    from app.models.staff import MessageThread
+
+    thread = await db.scalar(select(MessageThread).where(MessageThread.id == msg.thread_id))
+    await db.commit()
+    return _message_out(msg, patient, thread)
+
+
+@router.post(
+    "/api/messages/inbound",
+    response_model=MessageOut,
+    status_code=status.HTTP_201_CREATED,
+)
+async def receive_inbound_message(
+    payload: InboundMessageRequest,
+    ctx: StaffContext = Depends(get_staff_context),
+    db: AsyncSession = Depends(get_db),
+):
+    """Simulate inbound patient SMS; may trigger out-of-office auto-reply."""
+    msg = await staff_service.receive_inbound_message(
+        db, ctx, payload.patient_id, payload.body
+    )
+    patient = await staff_service.get_patient(db, ctx, payload.patient_id)
     from sqlalchemy import select
     from app.models.staff import MessageThread
 

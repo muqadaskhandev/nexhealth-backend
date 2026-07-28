@@ -17,9 +17,13 @@ from app.schemas.communications import (
     MessageGroupingPreviewRequest,
     OtherTemplateDedupeOut,
     OtherTemplateDedupeRequest,
+    OutOfOfficeSettingsOut,
+    OutOfOfficeSettingsUpdate,
     SavedResponseCreate,
     SavedResponseOut,
     SavedResponseUpdate,
+    ServiceHoursDay,
+    CustomDateHours,
     TemplateAppointmentTypeStatus,
     TemplateAutomationHistoryOut,
     TemplateConfigurationOut,
@@ -443,3 +447,62 @@ async def delete_saved_response(
     ctx: StaffContext = Depends(get_staff_context),
 ):
     await svc.delete_saved_response(db, ctx, response_id)
+
+
+def _ooo_out(row) -> OutOfOfficeSettingsOut:
+    shared: list[uuid.UUID] = []
+    for raw in row.shared_location_ids or []:
+        try:
+            shared.append(uuid.UUID(str(raw)))
+        except ValueError:
+            continue
+    hours = [
+        ServiceHoursDay(
+            day=int(h.get("day", 0)),
+            unavailable=bool(h.get("unavailable")),
+            start=str(h.get("start") or "09:00"),
+            end=str(h.get("end") or "17:00"),
+        )
+        for h in (row.service_hours or [])
+    ]
+    customs = [
+        CustomDateHours(
+            id=str(c.get("id") or ""),
+            date=str(c.get("date") or ""),
+            label=str(c.get("label") or ""),
+            unavailable=bool(c.get("unavailable", True)),
+            start=str(c.get("start") or "09:00"),
+            end=str(c.get("end") or "17:00"),
+        )
+        for c in (row.custom_dates or [])
+    ]
+    return OutOfOfficeSettingsOut(
+        id=row.id,
+        location_id=row.location_id,
+        enabled=row.enabled,
+        auto_reply_message=row.auto_reply_message or "",
+        service_hours=hours,
+        custom_dates=customs,
+        shared_location_ids=shared,
+        updated_at=row.updated_at,
+        reply_throttle_minutes=30,
+    )
+
+
+@router.get("/api/out-of-office", response_model=OutOfOfficeSettingsOut)
+async def get_out_of_office(
+    db: AsyncSession = Depends(get_db),
+    ctx: StaffContext = Depends(get_staff_context),
+):
+    row = await svc.get_out_of_office_settings(db, ctx)
+    return _ooo_out(row)
+
+
+@router.patch("/api/out-of-office", response_model=OutOfOfficeSettingsOut)
+async def update_out_of_office(
+    body: OutOfOfficeSettingsUpdate,
+    db: AsyncSession = Depends(get_db),
+    ctx: StaffContext = Depends(get_staff_context),
+):
+    row = await svc.update_out_of_office_settings(db, ctx, body)
+    return _ooo_out(row)

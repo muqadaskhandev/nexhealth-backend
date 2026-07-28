@@ -1819,6 +1819,113 @@ async def send_message(
     return msg
 
 
+async def receive_inbound_message(
+    db: AsyncSession, ctx: StaffContext, patient_id: uuid.UUID, body: str
+) -> Message:
+    """Record an inbound patient SMS and optionally send an out-of-office auto-reply."""
+    text = (body or "").strip()
+    if not text:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Message body is required"
+        )
+
+    patient = await get_patient(db, ctx, patient_id)
+    if patient is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Patient not found")
+
+    result = await db.execute(
+        select(MessageThread).where(
+            MessageThread.patient_id == patient_id,
+            MessageThread.practice_id == ctx.practice_id,
+            MessageThread.location_id == ctx.location_id,
+        )
+    )
+    thread = result.scalar_one_or_none()
+    if thread is None:
+        thread = MessageThread(
+            practice_id=ctx.practice_id,
+            location_id=ctx.location_id,
+            patient_id=patient_id,
+            unread=True,
+            archived=False,
+        )
+        db.add(thread)
+        await db.flush()
+    else:
+        thread.unread = True
+        thread.archived = False
+
+    inbound = Message(
+        thread_id=thread.id,
+        direction="inbound",
+        body=text,
+        channel=MessageChannel.SMS,
+        delivery_status="delivered",
+        failure_reason=None,
+        attachment_name=None,
+    )
+    db.add(inbound)
+    await db.flush()
+    await _log_activity(
+        db,
+        patient_id=patient_id,
+        activity_type=ActivityType.MESSAGE,
+        title="Message received",
+        body=text,
+    )
+
+    await _maybe_send_ooo_reply(db, ctx, thread)
+    return inbound
+
+
+async def _maybe_send_ooo_reply(
+    db: AsyncSession, ctx: StaffContext, thread: MessageThread
+) -> Message | None:
+    """Send OOO auto-reply at most once every 30 minutes per conversation."""
+    from app.services import communications_service as comm_svc
+
+    settings_row = await comm_svc.get_effective_ooo_for_location(
+        db, ctx.practice_id, ctx.location_id
+    )
+    if settings_row is None or not settings_row.enabled:
+        return None
+    if not comm_svc.is_outside_service_hours(settings_row):
+        return None
+
+    now = datetime.now(timezone.utc)
+    last = thread.last_ooo_reply_at
+    if last is not None:
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=timezone.utc)
+        if now - last < timedelta(minutes=comm_svc.OOO_THROTTLE_MINUTES):
+            return None
+
+    reply_body = (settings_row.auto_reply_message or "").strip()
+    if not reply_body:
+        return None
+
+    ooo = Message(
+        thread_id=thread.id,
+        direction="outbound",
+        body=reply_body,
+        channel=MessageChannel.SMS,
+        delivery_status="delivered",
+        failure_reason=None,
+        attachment_name=None,
+    )
+    db.add(ooo)
+    thread.last_ooo_reply_at = now
+    await db.flush()
+    await _log_activity(
+        db,
+        patient_id=thread.patient_id,
+        activity_type=ActivityType.MESSAGE,
+        title="Out-of-office reply sent",
+        body=reply_body,
+    )
+    return ooo
+
+
 async def update_message_thread(
     db: AsyncSession,
     ctx: StaffContext,

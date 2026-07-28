@@ -190,3 +190,43 @@ class SavedResponse(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
     )
+
+
+DEFAULT_OOO_MESSAGE = (
+    "Thank you for your text message. Our staff is unavailable and will reach out as soon as possible."
+)
+
+DEFAULT_SERVICE_HOURS = [
+    {"day": 0, "unavailable": True, "start": "09:00", "end": "17:00"},   # Sunday
+    {"day": 1, "unavailable": False, "start": "09:00", "end": "17:00"},  # Monday
+    {"day": 2, "unavailable": False, "start": "09:00", "end": "17:00"},
+    {"day": 3, "unavailable": False, "start": "09:00", "end": "17:00"},
+    {"day": 4, "unavailable": False, "start": "09:00", "end": "17:00"},
+    {"day": 5, "unavailable": False, "start": "09:00", "end": "17:00"},
+    {"day": 6, "unavailable": True, "start": "09:00", "end": "17:00"},  # Saturday
+]
+
+
+class OutOfOfficeSettings(Base):
+    """Per-location out-of-office auto-reply for inbound SMS (Settings → Messages)."""
+
+    __tablename__ = "out_of_office_settings"
+    __table_args__ = (UniqueConstraint("location_id", name="uq_ooo_settings_location"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    practice_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("practices.id", ondelete="CASCADE"), index=True
+    )
+    location_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("locations.id", ondelete="CASCADE"), index=True
+    )
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    auto_reply_message: Mapped[str] = mapped_column(
+        String(320), nullable=False, default=DEFAULT_OOO_MESSAGE
+    )
+    service_hours: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    custom_dates: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    shared_location_ids: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )

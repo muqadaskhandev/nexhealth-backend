@@ -196,3 +196,42 @@ class SavedResponseUpdate(BaseModel):
     title: str | None = Field(default=None, min_length=1, max_length=200)
     body: str | None = Field(default=None, max_length=5000)
     shared_location_ids: list[uuid.UUID] | None = None
+
+
+class ServiceHoursDay(BaseModel):
+    day: int = Field(ge=0, le=6)  # 0=Sunday … 6=Saturday
+    unavailable: bool = False
+    start: str = "09:00"  # HH:MM
+    end: str = "17:00"
+
+
+class CustomDateHours(BaseModel):
+    id: str
+    date: str  # YYYY-MM-DD
+    label: str = ""
+    unavailable: bool = True
+    start: str = "09:00"
+    end: str = "17:00"
+
+
+class OutOfOfficeSettingsOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    location_id: uuid.UUID
+    enabled: bool
+    auto_reply_message: str
+    service_hours: list[ServiceHoursDay]
+    custom_dates: list[CustomDateHours]
+    shared_location_ids: list[uuid.UUID] = Field(default_factory=list)
+    updated_at: datetime
+    # Informational: replies are limited to once every 30 minutes per conversation
+    reply_throttle_minutes: int = 30
+
+
+class OutOfOfficeSettingsUpdate(BaseModel):
+    enabled: bool | None = None
+    auto_reply_message: str | None = Field(default=None, max_length=320)
+    service_hours: list[ServiceHoursDay] | None = None
+    custom_dates: list[CustomDateHours] | None = None
+    shared_location_ids: list[uuid.UUID] | None = None

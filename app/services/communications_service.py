@@ -12,8 +12,11 @@ from sqlalchemy.orm import selectinload
 from app.core.staff_context import StaffContext
 from app.models.appointment_types import AppointmentTypeDef
 from app.models.communications import (
+    DEFAULT_OOO_MESSAGE,
+    DEFAULT_SERVICE_HOURS,
     CommunicationTemplate,
     CommunicationTemplateStep,
+    OutOfOfficeSettings,
     SavedResponse,
     TemplateAutomationSend,
     TemplateCategory,
@@ -24,6 +27,7 @@ from app.models.location import Location
 from app.models.staff import Appointment, Patient
 from app.schemas.communications import (
     CommunicationTemplateUpdate,
+    OutOfOfficeSettingsUpdate,
     SavedResponseCreate,
     SavedResponseUpdate,
     TemplateAppointmentTypeStatus,
@@ -1001,3 +1005,164 @@ async def delete_saved_response(
     row = await _get_saved_response(db, ctx, response_id)
     await db.delete(row)
     await db.commit()
+
+
+OOO_THROTTLE_MINUTES = 30
+
+
+def _parse_hhmm(value: str | None) -> time:
+    if not value:
+        return time(9, 0)
+    parts = value.strip().split(":")
+    try:
+        h = int(parts[0])
+        m = int(parts[1]) if len(parts) > 1 else 0
+        return time(h, m)
+    except (ValueError, IndexError):
+        return time(9, 0)
+
+
+def _time_in_range(now_t: time, start_s: str | None, end_s: str | None) -> bool:
+    start = _parse_hhmm(start_s)
+    end = _parse_hhmm(end_s)
+    if start <= end:
+        return start <= now_t < end
+    # Overnight window
+    return now_t >= start or now_t < end
+
+
+def is_outside_service_hours(settings: OutOfOfficeSettings, when: datetime | None = None) -> bool:
+    """True when inbound SMS should get an out-of-office auto-reply."""
+    now = when or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    local = now  # demo uses UTC as practice local time
+    today = local.date().isoformat()
+
+    for cd in settings.custom_dates or []:
+        if str(cd.get("date") or "") != today:
+            continue
+        if cd.get("unavailable"):
+            return True
+        return not _time_in_range(local.time().replace(tzinfo=None), cd.get("start"), cd.get("end"))
+
+    # Python weekday: Mon=0 … Sun=6 → our day: Sun=0 … Sat=6
+    our_day = (local.weekday() + 1) % 7
+    hours_list = settings.service_hours or DEFAULT_SERVICE_HOURS
+    hours = next((h for h in hours_list if int(h.get("day", -1)) == our_day), None)
+    if hours is None:
+        return True
+    if hours.get("unavailable"):
+        return True
+    return not _time_in_range(
+        local.time().replace(tzinfo=None), hours.get("start"), hours.get("end")
+    )
+
+
+async def _ensure_ooo_row(db: AsyncSession, ctx: StaffContext) -> OutOfOfficeSettings:
+    row = await db.scalar(
+        select(OutOfOfficeSettings).where(
+            OutOfOfficeSettings.practice_id == ctx.practice_id,
+            OutOfOfficeSettings.location_id == ctx.location_id,
+        )
+    )
+    if row is not None:
+        if not row.service_hours:
+            row.service_hours = list(DEFAULT_SERVICE_HOURS)
+            await db.commit()
+            await db.refresh(row)
+        return row
+
+    row = OutOfOfficeSettings(
+        practice_id=ctx.practice_id,
+        location_id=ctx.location_id,
+        enabled=False,
+        auto_reply_message=DEFAULT_OOO_MESSAGE,
+        service_hours=list(DEFAULT_SERVICE_HOURS),
+        custom_dates=[],
+        shared_location_ids=[],
+    )
+    db.add(row)
+    await db.commit()
+    await db.refresh(row)
+    return row
+
+
+async def get_out_of_office_settings(
+    db: AsyncSession, ctx: StaffContext
+) -> OutOfOfficeSettings:
+    return await _ensure_ooo_row(db, ctx)
+
+
+async def update_out_of_office_settings(
+    db: AsyncSession, ctx: StaffContext, data: OutOfOfficeSettingsUpdate
+) -> OutOfOfficeSettings:
+    row = await _ensure_ooo_row(db, ctx)
+    payload = data.model_dump(exclude_unset=True)
+    if "enabled" in payload and payload["enabled"] is not None:
+        row.enabled = bool(payload["enabled"])
+    if "auto_reply_message" in payload and payload["auto_reply_message"] is not None:
+        msg = (payload["auto_reply_message"] or "").strip()
+        if not msg:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Auto-reply message cannot be empty",
+            )
+        row.auto_reply_message = msg[:320]
+    if "service_hours" in payload and payload["service_hours"] is not None:
+        row.service_hours = [
+            {
+                "day": int(d["day"]),
+                "unavailable": bool(d.get("unavailable")),
+                "start": d.get("start") or "09:00",
+                "end": d.get("end") or "17:00",
+            }
+            for d in payload["service_hours"]
+        ]
+    if "custom_dates" in payload and payload["custom_dates"] is not None:
+        row.custom_dates = [
+            {
+                "id": str(d.get("id") or uuid.uuid4()),
+                "date": str(d["date"]),
+                "label": (d.get("label") or "")[:200],
+                "unavailable": bool(d.get("unavailable", True)),
+                "start": d.get("start") or "09:00",
+                "end": d.get("end") or "17:00",
+            }
+            for d in payload["custom_dates"]
+        ]
+    if "shared_location_ids" in payload and payload["shared_location_ids"] is not None:
+        row.shared_location_ids = [
+            str(x) for x in payload["shared_location_ids"] if x != ctx.location_id
+        ]
+    await db.commit()
+    await db.refresh(row)
+    return row
+
+
+async def get_effective_ooo_for_location(
+    db: AsyncSession, practice_id: uuid.UUID, location_id: uuid.UUID
+) -> OutOfOfficeSettings | None:
+    """Own settings, or settings shared to this location from another location."""
+    own = await db.scalar(
+        select(OutOfOfficeSettings).where(
+            OutOfOfficeSettings.practice_id == practice_id,
+            OutOfOfficeSettings.location_id == location_id,
+        )
+    )
+    if own is not None and own.enabled:
+        return own
+
+    rows = list(
+        await db.scalars(
+            select(OutOfOfficeSettings).where(
+                OutOfOfficeSettings.practice_id == practice_id,
+                OutOfOfficeSettings.enabled.is_(True),
+            )
+        )
+    )
+    loc = str(location_id)
+    for row in rows:
+        if loc in [str(x) for x in (row.shared_location_ids or [])]:
+            return row
+    return own  # may be disabled; caller checks enabled

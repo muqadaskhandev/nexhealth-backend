@@ -394,6 +394,13 @@ class SendMessageRequest(BaseModel):
     attachment_name: str | None = Field(default=None, max_length=300)
 
 
+class InboundMessageRequest(BaseModel):
+    """Simulate a patient SMS (triggers out-of-office auto-reply when applicable)."""
+
+    patient_id: uuid.UUID
+    body: str = Field(min_length=1, max_length=2000)
+
+
 class MessageThreadUpdate(BaseModel):
     unread: bool | None = None
     archived: bool | None = None

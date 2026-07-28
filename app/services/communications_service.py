@@ -58,7 +58,7 @@ _DEFAULT_TEMPLATES: list[dict] = [
     {
         "slug": "save-the-date",
         "name": "Save the Date",
-        "description": "Sent when a new appointment is scheduled on your practice management calendar.",
+        "description": "Sent when a new appointment is scheduled on your practice management calendar (e.g. phone or front desk). Deduped to the same phone and patient name once every 6 hours.",
         "category": TemplateCategory.APPOINTMENT_JOURNEY,
         "is_active": True,
         "total_sent": 68,
@@ -72,7 +72,7 @@ _DEFAULT_TEMPLATES: list[dict] = [
     {
         "slug": "appointment-rescheduled",
         "name": "NexHealth Appointment Rescheduled",
-        "description": "Sent immediately when you move an appointment to a different time on the NexHealth calendar.",
+        "description": "Sent immediately when you move an appointment to a different time on the NexHealth calendar. Only for customers not syncing with an EHR who use the NexHealth calendar.",
         "category": TemplateCategory.APPOINTMENT_JOURNEY,
         "is_active": False,
         "total_sent": 1,
@@ -86,7 +86,7 @@ _DEFAULT_TEMPLATES: list[dict] = [
     {
         "slug": "reminders",
         "name": "Reminders",
-        "description": "For BI-annual cleaning and happy appointment appointments. Sends to patients with upcoming appointments based on confirmation status and an adjustable timing sequence.",
+        "description": "Sent at set time intervals before an appointment (default: one week and one day before). Timing is adjustable via the gray time tiles in the editor.",
         "category": TemplateCategory.APPOINTMENT_JOURNEY,
         "is_active": True,
         "multi_location": True,
@@ -120,7 +120,7 @@ _DEFAULT_TEMPLATES: list[dict] = [
     {
         "slug": "missed",
         "name": "Missed",
-        "description": "At 7:45pm, for every patient whose appointment was not canceled, checked in, or rescheduled.",
+        "description": "At 7:45pm, for every patient whose appointment was not canceled, checked in, or rescheduled (no-show). Only sends if the patient does not have an upcoming appointment in the next 6 months.",
         "category": TemplateCategory.DAILY,
         "is_active": True,
         "total_sent": 7,
@@ -134,7 +134,7 @@ _DEFAULT_TEMPLATES: list[dict] = [
     {
         "slug": "cancelled",
         "name": "Cancelled",
-        "description": "At 7:45pm, for patients who have cancelled an appointment and have not rescheduled.",
+        "description": "At 7:45pm, for patients who cancelled an appointment and have not rescheduled. Sent on the day the canceled appointment was originally scheduled unless they have another appointment in the next 6 months.",
         "category": TemplateCategory.DAILY,
         "is_active": False,
         "total_sent": 3,
@@ -148,7 +148,7 @@ _DEFAULT_TEMPLATES: list[dict] = [
     {
         "slug": "reviews",
         "name": "Reviews",
-        "description": "At 7:30pm, for every patient who had an appointment on the calendar and kept their appointment.",
+        "description": "At 7:30pm, for every patient who had an appointment on the calendar and kept their appointment (did not cancel, reschedule, or no-show).",
         "category": TemplateCategory.DAILY,
         "is_active": True,
         "total_sent": 36,
@@ -162,7 +162,7 @@ _DEFAULT_TEMPLATES: list[dict] = [
     {
         "slug": "post-appointment-follow-up",
         "name": "Post Appointment Follow-up",
-        "description": "Goes out after an appointment to check in or provide further instructions.",
+        "description": "Goes out after an appointment to check in or provide further instructions. Frequency and time of day are customizable through the grey time tiles.",
         "category": TemplateCategory.POST_APPOINTMENT,
         "is_active": True,
         "total_sent": 157,
@@ -176,7 +176,7 @@ _DEFAULT_TEMPLATES: list[dict] = [
     {
         "slug": "recalls",
         "name": "Recalls",
-        "description": "Triggered by the date of the patient's last appointment; default 6 months after.",
+        "description": "Triggered by the date of the patient's last appointment; by default sent 6 months after if they have not made another. Frequency and time of day are customizable.",
         "category": TemplateCategory.POST_APPOINTMENT,
         "is_active": True,
         "total_sent": 42,
@@ -190,7 +190,7 @@ _DEFAULT_TEMPLATES: list[dict] = [
     {
         "slug": "new-patient",
         "name": "New Patient",
-        "description": "Sent when a new patient is added to your health record system.",
+        "description": "Sent when a new patient is added to your health record system. NexHealth checks every 15 minutes between 8 AM and 7 PM. Sends on patient create, not on booking.",
         "category": TemplateCategory.PATIENT_BASED,
         "is_active": False,
         "total_sent": 12,
@@ -202,9 +202,9 @@ _DEFAULT_TEMPLATES: list[dict] = [
         ],
     },
     {
-        "slug": "birthdays",
-        "name": "Birthdays",
-        "description": "Sent at 12:45 PM on the patient's birthday.",
+        "slug": "birthday",
+        "name": "Birthday",
+        "description": "The birthday message is sent at 12:45 PM on the patient's birthday.",
         "category": TemplateCategory.PATIENT_BASED,
         "is_active": True,
         "total_sent": 18,
@@ -218,7 +218,7 @@ _DEFAULT_TEMPLATES: list[dict] = [
     {
         "slug": "payments",
         "name": "Payments",
-        "description": "Triggered when a NexHealth payment request is manually sent by staff.",
+        "description": "Triggered when a NexHealth payment request is manually sent by staff. Does not automatically read due balances.",
         "category": TemplateCategory.MANUAL,
         "is_active": True,
         "total_sent": 112,
@@ -232,7 +232,7 @@ _DEFAULT_TEMPLATES: list[dict] = [
     {
         "slug": "waitlist-appointment",
         "name": "Waitlist Appointment",
-        "description": "Sends when a Waitlist blast is created via Your waitlist or Missed or cancelled.",
+        "description": "Sends to patients on the ASAP, Missed or Cancelled list when a Waitlist blast is created via Your waitlist or Missed or cancelled.",
         "category": TemplateCategory.MANUAL,
         "is_active": True,
         "total_sent": 24,
@@ -246,7 +246,7 @@ _DEFAULT_TEMPLATES: list[dict] = [
     {
         "slug": "waitlist-continuing-care",
         "name": "Waitlist Continuing Care",
-        "description": "Sends when a Waitlist blast is created via the Continuing care button.",
+        "description": "Sends to patients on the ASAP, Missed or Cancelled list when a Waitlist blast is created via the Continuing care button.",
         "category": TemplateCategory.MANUAL,
         "is_active": True,
         "total_sent": 9,
@@ -260,7 +260,7 @@ _DEFAULT_TEMPLATES: list[dict] = [
     {
         "slug": "form-request",
         "name": "Form Request",
-        "description": "Triggered when a form is manually sent to a patient in NexHealth.",
+        "description": "Triggered when a form is manually sent to a patient. Includes automatic form reminders one day and one hour before the form due date.",
         "category": TemplateCategory.MANUAL,
         "is_active": True,
         "total_sent": 55,
@@ -272,9 +272,9 @@ _DEFAULT_TEMPLATES: list[dict] = [
         ],
     },
     {
-        "slug": "form-reminders",
-        "name": "Form Reminders",
-        "description": "Triggered when office staff use Send reminder for an outstanding form request.",
+        "slug": "form-reminder",
+        "name": "Form Reminder",
+        "description": "Triggered when office staff use Send reminder in the Forms tab for an outstanding form request.",
         "category": TemplateCategory.MANUAL,
         "is_active": True,
         "total_sent": 21,

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.staff_context import StaffContext, get_staff_context
@@ -11,11 +11,13 @@ from app.database import get_db
 from app.schemas.communications import (
     CommunicationTemplateOut,
     CommunicationTemplateUpdate,
+    TemplateAppointmentTypeStatus,
     TemplateConfigurationOut,
     TemplateConfigurationUpdate,
     TemplateStepCreate,
     TemplateStepOut,
     TemplateStepUpdate,
+    TemplateVariantToggle,
 )
 from app.services import communications_service as svc
 
@@ -33,6 +35,8 @@ def _template_out(row) -> CommunicationTemplateOut:
         total_sent=row.total_sent,
         recipients=row.recipients,
         multi_location=row.multi_location,
+        appointment_type_id=row.appointment_type_id,
+        appointment_type_name=getattr(row, "appointment_type_name", "") or "",
         location_name=getattr(row, "location_name", ""),
         created_at=row.created_at,
         updated_at=row.updated_at,
@@ -57,11 +61,38 @@ def _template_out(row) -> CommunicationTemplateOut:
 
 @router.get("/api/communication-templates", response_model=list[CommunicationTemplateOut])
 async def list_templates(
+    scope: str = Query("default", pattern="^(default|variants|all)$"),
     db: AsyncSession = Depends(get_db),
     ctx: StaffContext = Depends(get_staff_context),
 ):
-    rows = await svc.list_templates(db, ctx)
+    rows = await svc.list_templates(db, ctx, scope=scope)
     return [_template_out(r) for r in rows]
+
+
+@router.get(
+    "/api/communication-templates/by-slug/{slug}/appointment-types",
+    response_model=list[TemplateAppointmentTypeStatus],
+)
+async def list_template_appointment_types(
+    slug: str,
+    db: AsyncSession = Depends(get_db),
+    ctx: StaffContext = Depends(get_staff_context),
+):
+    return await svc.list_appointment_type_status(db, ctx, slug)
+
+
+@router.post(
+    "/api/communication-templates/by-slug/{slug}/variants",
+    response_model=CommunicationTemplateOut | None,
+)
+async def set_template_variant(
+    slug: str,
+    body: TemplateVariantToggle,
+    db: AsyncSession = Depends(get_db),
+    ctx: StaffContext = Depends(get_staff_context),
+):
+    row = await svc.set_variant_for_appointment_type(db, ctx, slug, body)
+    return _template_out(row) if row else None
 
 
 @router.get("/api/communication-templates/by-slug/{slug}", response_model=CommunicationTemplateOut)

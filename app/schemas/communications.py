@@ -52,6 +52,8 @@ class CommunicationTemplateOut(BaseModel):
     total_sent: int
     recipients: int
     multi_location: bool
+    appointment_type_id: uuid.UUID | None = None
+    appointment_type_name: str = ""
     location_name: str = ""
     created_at: datetime
     updated_at: datetime
@@ -63,6 +65,18 @@ class CommunicationTemplateUpdate(BaseModel):
     description: str | None = None
 
 
+class TemplateVariantToggle(BaseModel):
+    appointment_type_id: uuid.UUID
+    enabled: bool
+
+
+class TemplateAppointmentTypeStatus(BaseModel):
+    appointment_type_id: uuid.UUID
+    appointment_type_name: str
+    enabled: bool
+    variant_id: uuid.UUID | None = None
+
+
 class TemplateConfigurationOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -70,9 +84,11 @@ class TemplateConfigurationOut(BaseModel):
     location_id: uuid.UUID
     sending_hours_start: time
     sending_hours_end: time
+    customize_by_appointment_type: bool = False
     updated_at: datetime
 
 
 class TemplateConfigurationUpdate(BaseModel):
-    sending_hours_start: time
-    sending_hours_end: time
+    sending_hours_start: time | None = None
+    sending_hours_end: time | None = None
+    customize_by_appointment_type: bool | None = None

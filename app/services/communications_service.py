@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.staff_context import StaffContext
+from app.models.appointment_types import AppointmentTypeDef
 from app.models.communications import (
     CommunicationTemplate,
     CommunicationTemplateStep,
@@ -20,11 +21,25 @@ from app.models.communications import (
 from app.models.location import Location
 from app.schemas.communications import (
     CommunicationTemplateUpdate,
+    TemplateAppointmentTypeStatus,
     TemplateConfigurationUpdate,
     TemplateStepCreate,
     TemplateStepUpdate,
+    TemplateVariantToggle,
 )
 
+# Template slugs that support per-appointment-type customization (Appointment Journeys + related).
+CUSTOMIZABLE_SLUGS = frozenset(
+    {
+        "reminders",
+        "post-appointment-follow-up",
+        "recalls",
+        "appointment-request",
+        "appointment-confirmed",
+        "save-the-date",
+        "appointment-rescheduled",
+    }
+)
 # Default automations offered by NexHealth (seeded per location on first access).
 _DEFAULT_TEMPLATES: list[dict] = [
     {
@@ -332,20 +347,44 @@ async def _ensure_templates_seeded(db: AsyncSession, ctx: StaffContext) -> None:
     await db.commit()
 
 
-async def list_templates(db: AsyncSession, ctx: StaffContext) -> list[CommunicationTemplate]:
+async def list_templates(
+    db: AsyncSession,
+    ctx: StaffContext,
+    *,
+    scope: str = "default",
+) -> list[CommunicationTemplate]:
+    """scope: default | variants | all"""
     await _ensure_templates_seeded(db, ctx)
     loc = await db.get(Location, ctx.location_id)
     location_name = loc.name if loc else ""
 
-    result = await db.scalars(
+    stmt = (
         select(CommunicationTemplate)
         .where(CommunicationTemplate.location_id == ctx.location_id)
         .options(selectinload(CommunicationTemplate.steps))
         .order_by(CommunicationTemplate.name)
     )
-    rows = list(result)
+    if scope == "default":
+        stmt = stmt.where(CommunicationTemplate.appointment_type_id.is_(None))
+    elif scope == "variants":
+        stmt = stmt.where(CommunicationTemplate.appointment_type_id.is_not(None))
+
+    rows = list(await db.scalars(stmt))
+
+    # Attach appointment type names for variants
+    type_ids = {r.appointment_type_id for r in rows if r.appointment_type_id}
+    type_names: dict[uuid.UUID, str] = {}
+    if type_ids:
+        for t in await db.scalars(
+            select(AppointmentTypeDef).where(AppointmentTypeDef.id.in_(type_ids))
+        ):
+            type_names[t.id] = t.name
+
     for row in rows:
         row.location_name = location_name  # type: ignore[attr-defined]
+        row.appointment_type_name = (  # type: ignore[attr-defined]
+            type_names.get(row.appointment_type_id, "") if row.appointment_type_id else ""
+        )
     return rows
 
 
@@ -363,12 +402,23 @@ async def get_template(db: AsyncSession, ctx: StaffContext, template_id: uuid.UU
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Template not found")
     loc = await db.get(Location, ctx.location_id)
     tmpl.location_name = loc.name if loc else ""  # type: ignore[attr-defined]
+    if tmpl.appointment_type_id:
+        at = await db.get(AppointmentTypeDef, tmpl.appointment_type_id)
+        tmpl.appointment_type_name = at.name if at else ""  # type: ignore[attr-defined]
+    else:
+        tmpl.appointment_type_name = ""  # type: ignore[attr-defined]
     return tmpl
 
 
-async def get_template_by_slug(db: AsyncSession, ctx: StaffContext, slug: str) -> CommunicationTemplate:
+async def get_template_by_slug(
+    db: AsyncSession,
+    ctx: StaffContext,
+    slug: str,
+    *,
+    appointment_type_id: uuid.UUID | None = None,
+) -> CommunicationTemplate:
     await _ensure_templates_seeded(db, ctx)
-    tmpl = await db.scalar(
+    stmt = (
         select(CommunicationTemplate)
         .where(
             CommunicationTemplate.slug == slug,
@@ -376,11 +426,139 @@ async def get_template_by_slug(db: AsyncSession, ctx: StaffContext, slug: str) -
         )
         .options(selectinload(CommunicationTemplate.steps))
     )
+    if appointment_type_id is None:
+        stmt = stmt.where(CommunicationTemplate.appointment_type_id.is_(None))
+    else:
+        stmt = stmt.where(CommunicationTemplate.appointment_type_id == appointment_type_id)
+    tmpl = await db.scalar(stmt)
     if not tmpl:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Template not found")
     loc = await db.get(Location, ctx.location_id)
     tmpl.location_name = loc.name if loc else ""  # type: ignore[attr-defined]
+    if tmpl.appointment_type_id:
+        at = await db.get(AppointmentTypeDef, tmpl.appointment_type_id)
+        tmpl.appointment_type_name = at.name if at else ""  # type: ignore[attr-defined]
+    else:
+        tmpl.appointment_type_name = ""  # type: ignore[attr-defined]
     return tmpl
+
+
+async def list_appointment_type_status(
+    db: AsyncSession, ctx: StaffContext, slug: str
+) -> list[TemplateAppointmentTypeStatus]:
+    """Which appointment types have a custom sequence enabled for this template slug."""
+    await _ensure_templates_seeded(db, ctx)
+    if slug not in CUSTOMIZABLE_SLUGS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This template type does not support per-appointment-type customization",
+        )
+
+    types = list(
+        await db.scalars(
+            select(AppointmentTypeDef)
+            .where(
+                AppointmentTypeDef.practice_id == ctx.practice_id,
+                AppointmentTypeDef.location_id == ctx.location_id,
+            )
+            .order_by(AppointmentTypeDef.position, AppointmentTypeDef.name)
+        )
+    )
+    variants = list(
+        await db.scalars(
+            select(CommunicationTemplate).where(
+                CommunicationTemplate.location_id == ctx.location_id,
+                CommunicationTemplate.slug == slug,
+                CommunicationTemplate.appointment_type_id.is_not(None),
+            )
+        )
+    )
+    by_type = {v.appointment_type_id: v for v in variants}
+
+    return [
+        TemplateAppointmentTypeStatus(
+            appointment_type_id=t.id,
+            appointment_type_name=t.name,
+            enabled=bool(by_type.get(t.id) and by_type[t.id].is_active),
+            variant_id=by_type[t.id].id if by_type.get(t.id) else None,
+        )
+        for t in types
+    ]
+
+
+async def set_variant_for_appointment_type(
+    db: AsyncSession,
+    ctx: StaffContext,
+    slug: str,
+    data: TemplateVariantToggle,
+) -> CommunicationTemplate | None:
+    """Enable: clone default template for appointment type. Disable: deactivate (keep for history)."""
+    await _ensure_templates_seeded(db, ctx)
+    if slug not in CUSTOMIZABLE_SLUGS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This template type does not support per-appointment-type customization",
+        )
+
+    at = await db.get(AppointmentTypeDef, data.appointment_type_id)
+    if not at or at.location_id != ctx.location_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Appointment type not found")
+
+    existing = await db.scalar(
+        select(CommunicationTemplate)
+        .where(
+            CommunicationTemplate.location_id == ctx.location_id,
+            CommunicationTemplate.slug == slug,
+            CommunicationTemplate.appointment_type_id == data.appointment_type_id,
+        )
+        .options(selectinload(CommunicationTemplate.steps))
+    )
+
+    if not data.enabled:
+        if existing:
+            existing.is_active = False
+            await db.commit()
+        return existing
+
+    if existing:
+        existing.is_active = True
+        await db.commit()
+        return await get_template(db, ctx, existing.id)
+
+    base = await get_template_by_slug(db, ctx, slug)
+    variant = CommunicationTemplate(
+        practice_id=ctx.practice_id,
+        location_id=ctx.location_id,
+        slug=base.slug,
+        name=f"{base.name} — {at.name}",
+        description=base.description,
+        category=base.category,
+        is_active=True,
+        total_sent=0,
+        recipients=0,
+        multi_location=False,
+        appointment_type_id=at.id,
+    )
+    db.add(variant)
+    await db.flush()
+    for step in base.steps:
+        db.add(
+            CommunicationTemplateStep(
+                template_id=variant.id,
+                kind=step.kind,
+                title=step.title,
+                subtitle=step.subtitle,
+                body=step.body,
+                subject=step.subject,
+                timing_value=step.timing_value,
+                timing_unit=step.timing_unit,
+                condition_label=step.condition_label,
+                position=step.position,
+                meta=dict(step.meta or {}),
+            )
+        )
+    await db.commit()
+    return await get_template(db, ctx, variant.id)
 
 
 async def update_template(
@@ -466,6 +644,7 @@ async def get_or_create_config(db: AsyncSession, ctx: StaffContext) -> TemplateC
         location_id=ctx.location_id,
         sending_hours_start=time(6, 0),
         sending_hours_end=time(22, 0),
+        customize_by_appointment_type=False,
     )
     db.add(config)
     await db.commit()
@@ -479,13 +658,20 @@ async def update_config(
     data: TemplateConfigurationUpdate,
 ) -> TemplateConfiguration:
     config = await get_or_create_config(db, ctx)
-    if data.sending_hours_end <= data.sending_hours_start:
+    payload = data.model_dump(exclude_unset=True)
+    start = payload.get("sending_hours_start", config.sending_hours_start)
+    end = payload.get("sending_hours_end", config.sending_hours_end)
+    if start is not None and end is not None and end <= start:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="End time must be after start time",
         )
-    config.sending_hours_start = data.sending_hours_start
-    config.sending_hours_end = data.sending_hours_end
+    if "sending_hours_start" in payload and payload["sending_hours_start"] is not None:
+        config.sending_hours_start = payload["sending_hours_start"]
+    if "sending_hours_end" in payload and payload["sending_hours_end"] is not None:
+        config.sending_hours_end = payload["sending_hours_end"]
+    if "customize_by_appointment_type" in payload and payload["customize_by_appointment_type"] is not None:
+        config.customize_by_appointment_type = payload["customize_by_appointment_type"]
     await db.commit()
     await db.refresh(config)
     return config

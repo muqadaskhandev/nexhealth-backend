@@ -96,8 +96,18 @@ def _appt_out(appt, patient) -> AppointmentOut:
 
 # ── Dashboard ────────────────────────────────────────────────────────────────
 @router.get("/api/dashboard/stats", response_model=DashboardStats)
-async def stats(ctx: StaffContext = Depends(get_staff_context), db: AsyncSession = Depends(get_db)):
-    return DashboardStats(**await staff_service.dashboard_stats(db, ctx))
+async def stats(
+    start_date: str | None = Query(default=None, description="YYYY-MM-DD range start"),
+    end_date: str | None = Query(default=None, description="YYYY-MM-DD range end"),
+    ctx: StaffContext = Depends(get_staff_context),
+    db: AsyncSession = Depends(get_db),
+):
+    start_day = end_day = None
+    if start_date or end_date:
+        start = datetime.fromisoformat(start_date) if start_date else datetime.fromisoformat(end_date)  # type: ignore[arg-type]
+        end = datetime.fromisoformat(end_date) if end_date else start
+        start_day, end_day = start, end
+    return DashboardStats(**await staff_service.dashboard_stats(db, ctx, start_day=start_day, end_day=end_day))
 
 
 @router.get("/api/activity", response_model=list[LocationActivityOut])

@@ -411,6 +411,7 @@ class VerifyInsuranceRequest(BaseModel):
 class DashboardStats(BaseModel):
     appointments_today: int
     confirmed_count: int
+    unconfirmed_count: int = 0
     waitlist_count: int
     pending_forms: int
     pending_payments: int

@@ -1773,10 +1773,20 @@ async def verify_insurance(
     return patient
 
 
-async def dashboard_stats(db: AsyncSession, ctx: StaffContext) -> dict:
-    today = _now()
-    appts = await list_appointments(db, ctx, day=today)
+async def dashboard_stats(
+    db: AsyncSession,
+    ctx: StaffContext,
+    *,
+    start_day: datetime | None = None,
+    end_day: datetime | None = None,
+) -> dict:
+    if start_day is not None and end_day is not None:
+        appts = await list_appointments(db, ctx, start_day=start_day, end_day=end_day)
+    else:
+        appts = await list_appointments(db, ctx)
+
     confirmed = sum(1 for a, _ in appts if a.status == AppointmentStatus.CONFIRMED)
+    unconfirmed = sum(1 for a, _ in appts if a.status == AppointmentStatus.UNCONFIRMED)
     waitlist = await list_waitlist(db, ctx)
     pending_forms = sum(1 for a, _ in appts if a.forms_status == FormsStatus.INCOMPLETE)
     payments = await list_payments(db, ctx)
@@ -1784,6 +1794,7 @@ async def dashboard_stats(db: AsyncSession, ctx: StaffContext) -> dict:
     return {
         "appointments_today": len(appts),
         "confirmed_count": confirmed,
+        "unconfirmed_count": unconfirmed,
         "waitlist_count": len(waitlist),
         "pending_forms": pending_forms,
         "pending_payments": pending_payments,

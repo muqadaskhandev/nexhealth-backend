@@ -96,6 +96,28 @@ FAVORITE_TEMPLATES: list[dict[str, Any]] = [
             "reset. Book with {{LOCATION_NAME}}: {{LOCATION_BOOKING_APPOINTMENT}}"
         ),
     },
+    {
+        "title": "🦷 TEMPLATE: Recall / Continuing Care",
+        "email_subject": "You're due for continuing care",
+        "email_preview_text": "Schedule your next visit",
+        "email_body": (
+            "Hi {{PATIENT_FIRST_NAME}},\n\n"
+            "It's time for your recall / continuing care visit at {{LOCATION_NAME}}. "
+            "Patients who haven't been seen in about 6 months, or who are overdue for "
+            "Prophy or Perio, are great candidates for this message.\n\n"
+            "Book online:\n{{LOCATION_BOOKING_APPOINTMENT}}\n\n"
+            "Thanks,\n{{LOCATION_NAME}}"
+        ),
+        "sms_body": (
+            "Hi {{PATIENT_FIRST_NAME}}, you're due for continuing care at {{LOCATION_NAME}}. "
+            "Book: {{LOCATION_BOOKING_APPOINTMENT}}"
+        ),
+        "audience_filters": {
+            "continuing_care_due": True,
+            "exclude_upcoming_appointments": True,
+            "appointment": "has_past",
+        },
+    },
 ]
 
 
@@ -138,9 +160,46 @@ async def _seed_favorites(db: AsyncSession, ctx: StaffContext) -> None:
                 email_preview_text=spec["email_preview_text"],
                 email_body=spec["email_body"],
                 sms_body=spec["sms_body"][:425],
+                audience_filters=dict(spec.get("audience_filters") or {}),
                 created_by_name="NexHealth",
             )
         )
+    await db.commit()
+
+
+async def _ensure_recall_campaign_favorite(db: AsyncSession, ctx: StaffContext) -> None:
+    """Add recall favorite for practices that already had favorites seeded."""
+    title = "🦷 TEMPLATE: Recall / Continuing Care"
+    found = await db.scalar(
+        select(Campaign.id).where(
+            Campaign.practice_id == ctx.practice_id,
+            Campaign.is_favorite_template.is_(True),
+            Campaign.title == title,
+        )
+    )
+    if found:
+        return
+    spec = next((s for s in FAVORITE_TEMPLATES if s["title"] == title), None)
+    if not spec:
+        return
+    db.add(
+        Campaign(
+            practice_id=ctx.practice_id,
+            location_ids=[],
+            title=spec["title"],
+            status=CampaignStatus.FAVORITE.value,
+            is_favorite_template=True,
+            wizard_step="build",
+            has_email=True,
+            has_sms=True,
+            email_subject=spec["email_subject"],
+            email_preview_text=spec["email_preview_text"],
+            email_body=spec["email_body"],
+            sms_body=spec["sms_body"][:425],
+            audience_filters=dict(spec.get("audience_filters") or {}),
+            created_by_name="NexHealth",
+        )
+    )
     await db.commit()
 
 
@@ -148,6 +207,7 @@ async def list_campaigns(
     db: AsyncSession, ctx: StaffContext, *, tab: str = "all", q: str | None = None
 ) -> list[Campaign]:
     await _seed_favorites(db, ctx)
+    await _ensure_recall_campaign_favorite(db, ctx)
     rows = list(
         await db.scalars(
             select(Campaign)
@@ -344,13 +404,14 @@ async def resolve_audience_patients(
     insurance_name = (filters.get("insurance_name") or "").strip().lower()
     waitlist = (filters.get("waitlist") or "all").lower()
     continuing = bool(filters.get("continuing_care_due"))
+    exclude_upcoming = bool(filters.get("exclude_upcoming_appointments"))
     search_names: list[str] = [str(x).strip().lower() for x in (filters.get("search_names") or []) if str(x).strip()]
 
     # Appointment presence
     patient_ids = [p.id for p in patients]
     past_ids: set[uuid.UUID] = set()
     future_ids: set[uuid.UUID] = set()
-    if patient_ids and appt != "all":
+    if patient_ids and (appt != "all" or continuing or exclude_upcoming):
         now = datetime.now(timezone.utc)
         appts = list(
             await db.scalars(
@@ -427,6 +488,10 @@ async def resolve_audience_patients(
 
         # Demo: continuing care due ≈ has past appointment and no future
         if continuing and not (p.id in past_ids and p.id not in future_ids):
+            continue
+
+        # Recall campaigns: Do not send to patients with an upcoming appointment
+        if exclude_upcoming and p.id in future_ids:
             continue
 
         if search_names:

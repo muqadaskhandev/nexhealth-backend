@@ -240,15 +240,227 @@ _DEFAULT_TEMPLATES: list[dict] = [
     {
         "slug": "recalls",
         "name": "Recalls",
-        "description": "Triggered by the date of the patient's last appointment; by default sent 6 months after if they have not made another. Frequency and time of day are customizable.",
+        "description": (
+            "Sent automatically when patients are due for care, inviting them to book their next appointment. "
+            "By default, goes out six months to the day after the patient's last appointment if they do not "
+            "have an appointment upcoming. Goes out to ANY patient regardless of original appointment type "
+            "unless you customize by appointment type. Also called Recare or Continuing care."
+        ),
         "category": TemplateCategory.POST_APPOINTMENT,
         "is_active": True,
         "total_sent": 42,
         "recipients": 38,
         "steps": [
-            {"kind": TemplateStepKind.TRIGGER, "title": "Recall due", "subtitle": "6 months after last visit", "timing_value": 6, "timing_unit": "month", "position": 0},
-            {"kind": TemplateStepKind.EMAIL, "title": "Recalls Email", "subject": "Time for your next visit", "body": "Hi {{PATIENT_FIRST_NAME}}, it's time to schedule your next appointment at {{LOCATION_NAME}}.", "position": 1},
-            {"kind": TemplateStepKind.SMS, "title": "Recalls SMS", "body": "Hi {{PATIENT_FIRST_NAME}}, time for your recall visit. Book at {{LOCATION_NAME}}.", "position": 2},
+            {
+                "kind": TemplateStepKind.TRIGGER,
+                "title": "Next action",
+                "subtitle": "6 month Recalls",
+                "timing_value": 6,
+                "timing_unit": "month",
+                "position": 0,
+            },
+            {
+                "kind": TemplateStepKind.EMAIL,
+                "title": "Recalls Email",
+                "subject": "Time for your next visit at {{LOCATION_NAME}}",
+                "body": (
+                    "Hi {{PATIENT_FIRST_NAME}},\n\n"
+                    "It's time to schedule your next appointment at {{LOCATION_NAME}}. "
+                    "Book online anytime:\n{{LOCATION_BOOKING_APPOINTMENT}}\n\n"
+                    "We look forward to seeing you!"
+                ),
+                "position": 1,
+            },
+            {
+                "kind": TemplateStepKind.SMS,
+                "title": "Recalls SMS",
+                "body": (
+                    "Hi {{PATIENT_FIRST_NAME}}, time for your recall visit at {{LOCATION_NAME}}. "
+                    "Book: {{LOCATION_BOOKING_APPOINTMENT}}"
+                ),
+                "position": 2,
+            },
+        ],
+    },
+    {
+        "slug": "custom-continuing-care",
+        "name": "Eveni Recal",
+        "description": (
+            "Custom continuing care (recare) template based on the next due date recorded in your health "
+            "record system (usually Prophy or Perio). By default begins the day before the listed due date, "
+            "then at 1, 2, 4, 6, 8, 12, 18, and 24 months after if they have not booked. "
+            "For Eaglesoft we read the next recall date; for other systems we read due dates for Prophy, Perio, Exams, etc."
+        ),
+        "category": TemplateCategory.POST_APPOINTMENT,
+        "is_active": False,
+        "multi_location": True,
+        "total_sent": 0,
+        "recipients": 0,
+        "steps": [
+            {
+                "kind": TemplateStepKind.TRIGGER,
+                "title": "Next action",
+                "subtitle": "1 day before due date",
+                "timing_value": 1,
+                "timing_unit": "day",
+                "position": 0,
+            },
+            {
+                "kind": TemplateStepKind.EMAIL,
+                "title": "Continuing Care Email",
+                "subject": "You're due for continuing care",
+                "body": (
+                    "Hi {{PATIENT_FIRST_NAME}},\n\n"
+                    "You're coming due for continuing care at {{LOCATION_NAME}}. "
+                    "Schedule your next visit:\n{{LOCATION_BOOKING_APPOINTMENT}}"
+                ),
+                "position": 1,
+            },
+            {
+                "kind": TemplateStepKind.SMS,
+                "title": "Continuing Care SMS",
+                "body": (
+                    "Hi {{PATIENT_FIRST_NAME}}, you're due for continuing care at {{LOCATION_NAME}}. "
+                    "Book: {{LOCATION_BOOKING_APPOINTMENT}}"
+                ),
+                "position": 2,
+            },
+            {
+                "kind": TemplateStepKind.TRIGGER,
+                "title": "Next action",
+                "subtitle": "1 month after due date",
+                "timing_value": 1,
+                "timing_unit": "month",
+                "position": 3,
+            },
+            {
+                "kind": TemplateStepKind.SMS,
+                "title": "1 month overdue SMS",
+                "body": (
+                    "Hi {{PATIENT_FIRST_NAME}}, you're overdue for continuing care. "
+                    "Book with {{LOCATION_NAME}}: {{LOCATION_BOOKING_APPOINTMENT}}"
+                ),
+                "position": 4,
+            },
+            {
+                "kind": TemplateStepKind.TRIGGER,
+                "title": "Next action",
+                "subtitle": "2 months after due date",
+                "timing_value": 2,
+                "timing_unit": "month",
+                "position": 5,
+            },
+            {
+                "kind": TemplateStepKind.SMS,
+                "title": "2 month overdue SMS",
+                "body": (
+                    "Hi {{PATIENT_FIRST_NAME}}, still due for continuing care at {{LOCATION_NAME}}. "
+                    "Book: {{LOCATION_BOOKING_APPOINTMENT}}"
+                ),
+                "position": 6,
+            },
+            {
+                "kind": TemplateStepKind.TRIGGER,
+                "title": "Next action",
+                "subtitle": "4 months after due date",
+                "timing_value": 4,
+                "timing_unit": "month",
+                "position": 7,
+            },
+            {
+                "kind": TemplateStepKind.SMS,
+                "title": "4 month overdue SMS",
+                "body": (
+                    "Hi {{PATIENT_FIRST_NAME}}, please schedule your continuing care visit. "
+                    "{{LOCATION_BOOKING_APPOINTMENT}}"
+                ),
+                "position": 8,
+            },
+            {
+                "kind": TemplateStepKind.TRIGGER,
+                "title": "Next action",
+                "subtitle": "6 months after due date",
+                "timing_value": 6,
+                "timing_unit": "month",
+                "position": 9,
+            },
+            {
+                "kind": TemplateStepKind.SMS,
+                "title": "6 month overdue SMS",
+                "body": (
+                    "Hi {{PATIENT_FIRST_NAME}}, it's been 6 months past your due date. "
+                    "Book: {{LOCATION_BOOKING_APPOINTMENT}}"
+                ),
+                "position": 10,
+            },
+            {
+                "kind": TemplateStepKind.TRIGGER,
+                "title": "Next action",
+                "subtitle": "8 months after due date",
+                "timing_value": 8,
+                "timing_unit": "month",
+                "position": 11,
+            },
+            {
+                "kind": TemplateStepKind.SMS,
+                "title": "8 month overdue SMS",
+                "body": (
+                    "Hi {{PATIENT_FIRST_NAME}}, please book continuing care at {{LOCATION_NAME}}: "
+                    "{{LOCATION_BOOKING_APPOINTMENT}}"
+                ),
+                "position": 12,
+            },
+            {
+                "kind": TemplateStepKind.TRIGGER,
+                "title": "Next action",
+                "subtitle": "12 months after due date",
+                "timing_value": 12,
+                "timing_unit": "month",
+                "position": 13,
+            },
+            {
+                "kind": TemplateStepKind.SMS,
+                "title": "12 month overdue SMS",
+                "body": (
+                    "Hi {{PATIENT_FIRST_NAME}}, you're a year past due for continuing care. "
+                    "Book: {{LOCATION_BOOKING_APPOINTMENT}}"
+                ),
+                "position": 14,
+            },
+            {
+                "kind": TemplateStepKind.TRIGGER,
+                "title": "Next action",
+                "subtitle": "18 months after due date",
+                "timing_value": 18,
+                "timing_unit": "month",
+                "position": 15,
+            },
+            {
+                "kind": TemplateStepKind.SMS,
+                "title": "18 month overdue SMS",
+                "body": (
+                    "Hi {{PATIENT_FIRST_NAME}}, please schedule with {{LOCATION_NAME}}: "
+                    "{{LOCATION_BOOKING_APPOINTMENT}}"
+                ),
+                "position": 16,
+            },
+            {
+                "kind": TemplateStepKind.TRIGGER,
+                "title": "Next action",
+                "subtitle": "24 months after due date",
+                "timing_value": 24,
+                "timing_unit": "month",
+                "position": 17,
+            },
+            {
+                "kind": TemplateStepKind.SMS,
+                "title": "24 month overdue SMS",
+                "body": (
+                    "Hi {{PATIENT_FIRST_NAME}}, it's been 24 months since your due date. "
+                    "Book continuing care: {{LOCATION_BOOKING_APPOINTMENT}}"
+                ),
+                "position": 18,
+            },
         ],
     },
     {
@@ -362,11 +574,59 @@ async def _ensure_templates_seeded(db: AsyncSession, ctx: StaffContext) -> None:
             CommunicationTemplate.location_id == ctx.location_id
         ).limit(1)
     )
-    if existing:
+    if not existing:
+        for spec in _DEFAULT_TEMPLATES:
+            steps_spec = spec["steps"]
+            tmpl = CommunicationTemplate(
+                practice_id=ctx.practice_id,
+                location_id=ctx.location_id,
+                slug=spec["slug"],
+                name=spec["name"],
+                description=spec["description"],
+                category=spec["category"],
+                is_active=spec.get("is_active", False),
+                total_sent=spec.get("total_sent", 0),
+                recipients=spec.get("recipients", 0),
+                multi_location=bool(spec.get("multi_location", False)),
+            )
+            db.add(tmpl)
+            await db.flush()
+            for step in steps_spec:
+                db.add(
+                    CommunicationTemplateStep(
+                        template_id=tmpl.id,
+                        kind=step["kind"],
+                        title=step["title"],
+                        subtitle=step.get("subtitle", ""),
+                        body=step.get("body", ""),
+                        subject=step.get("subject", ""),
+                        timing_value=step.get("timing_value"),
+                        timing_unit=step.get("timing_unit"),
+                        condition_label=step.get("condition_label"),
+                        position=step["position"],
+                        meta=dict(step.get("meta") or {}),
+                    )
+                )
+        await db.commit()
         return
 
-    for spec in _DEFAULT_TEMPLATES:
-        steps_spec = spec["steps"]
+    # Existing installs: ensure EHR custom continuing-care Recall exists for Custom tab
+    await _ensure_ehr_custom_recalls(db, ctx)
+
+
+async def _ensure_ehr_custom_recalls(db: AsyncSession, ctx: StaffContext) -> None:
+    """Seed Custom continuing care (Eveni Recal) if missing on an already-seeded location."""
+    custom_specs = [s for s in _DEFAULT_TEMPLATES if str(s["slug"]).startswith("custom-")]
+    for spec in custom_specs:
+        found = await db.scalar(
+            select(CommunicationTemplate.id).where(
+                CommunicationTemplate.location_id == ctx.location_id,
+                CommunicationTemplate.slug == spec["slug"],
+                CommunicationTemplate.appointment_type_id.is_(None),
+            )
+        )
+        if found:
+            continue
         tmpl = CommunicationTemplate(
             practice_id=ctx.practice_id,
             location_id=ctx.location_id,
@@ -375,13 +635,13 @@ async def _ensure_templates_seeded(db: AsyncSession, ctx: StaffContext) -> None:
             description=spec["description"],
             category=spec["category"],
             is_active=spec.get("is_active", False),
-            total_sent=spec.get("total_sent", 0),
-            recipients=spec.get("recipients", 0),
+            total_sent=0,
+            recipients=0,
             multi_location=bool(spec.get("multi_location", False)),
         )
         db.add(tmpl)
         await db.flush()
-        for step in steps_spec:
+        for step in spec["steps"]:
             db.add(
                 CommunicationTemplateStep(
                     template_id=tmpl.id,
@@ -397,8 +657,7 @@ async def _ensure_templates_seeded(db: AsyncSession, ctx: StaffContext) -> None:
                     meta=dict(step.get("meta") or {}),
                 )
             )
-
-    await db.commit()
+        await db.commit()
 
 
 async def list_templates(
@@ -407,7 +666,7 @@ async def list_templates(
     *,
     scope: str = "default",
 ) -> list[CommunicationTemplate]:
-    """scope: default | variants | all"""
+    """scope: default | variants | all | ehr-custom"""
     await _ensure_templates_seeded(db, ctx)
     loc = await db.get(Location, ctx.location_id)
     location_name = loc.name if loc else ""
@@ -419,14 +678,22 @@ async def list_templates(
         .order_by(CommunicationTemplate.name)
     )
     if scope == "default":
-        stmt = stmt.where(CommunicationTemplate.appointment_type_id.is_(None))
+        stmt = stmt.where(
+            CommunicationTemplate.appointment_type_id.is_(None),
+            ~CommunicationTemplate.slug.like("custom-%"),
+        )
     elif scope == "variants":
         stmt = stmt.where(CommunicationTemplate.appointment_type_id.is_not(None))
+    elif scope == "ehr-custom":
+        stmt = stmt.where(
+            CommunicationTemplate.appointment_type_id.is_(None),
+            CommunicationTemplate.slug.like("custom-%"),
+        )
 
     rows = list(await db.scalars(stmt))
 
     # Prefer location-scoped copies over multi-location shared templates for the same slug.
-    if scope == "default":
+    if scope in ("default", "ehr-custom"):
         best: dict[str, CommunicationTemplate] = {}
         for row in rows:
             key = row.slug
@@ -714,10 +981,12 @@ async def add_step(
     next_pos = max((s.position for s in tmpl.steps), default=-1) + 1
 
     if data.kind == "trigger":
-        if tmpl.slug != "reminders":
+        if tmpl.slug not in ("reminders", "recalls", "custom-continuing-care") and not tmpl.slug.startswith(
+            "custom-"
+        ):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Additional timing triggers are only supported on Reminders",
+                detail="Additional timing triggers are only supported on Reminders and Recalls",
             )
         kind = TemplateStepKind.TRIGGER
     elif data.kind == "email":
@@ -949,6 +1218,7 @@ def _fill_reminder_tokens(
     appointment: Appointment,
     location_name: str,
     allow_patient_cancel: bool = False,
+    booking_link: str | None = None,
 ) -> str:
     from app.services.reminder_responses import insert_confirm_appt_prompt
 
@@ -959,6 +1229,7 @@ def _fill_reminder_tokens(
         f"({appointment.appointment_type})"
     )
     insert_confirm_text = insert_confirm_appt_prompt(allow_cancel=allow_patient_cancel)
+    link = booking_link or f"{settings.frontend_url}/appt/book"
     replacements = {
         "{{PATIENT_FIRST_NAME}}": patient.first_name or "",
         "{{PATIENT_LAST_NAME}}": patient.last_name or "",
@@ -975,6 +1246,8 @@ def _fill_reminder_tokens(
             else "[Confirm appointment & forms]"
         ),
         "{{PROVIDER_NAME}}": appointment.provider_name or "",
+        "{{LOCATION_BOOKING_APPOINTMENT}}": link,
+        "{{LOCATION_PHONE}}": "",
     }
     out = text or ""
     for token, value in replacements.items():

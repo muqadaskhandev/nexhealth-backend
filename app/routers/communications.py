@@ -85,7 +85,7 @@ def _template_out(row) -> CommunicationTemplateOut:
 
 @router.get("/api/communication-templates", response_model=list[CommunicationTemplateOut])
 async def list_templates(
-    scope: str = Query("default", pattern="^(default|variants|all)$"),
+    scope: str = Query("default", pattern="^(default|variants|all|ehr-custom)$"),
     db: AsyncSession = Depends(get_db),
     ctx: StaffContext = Depends(get_staff_context),
 ):

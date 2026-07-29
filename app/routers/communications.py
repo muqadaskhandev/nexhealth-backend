@@ -13,6 +13,9 @@ from app.database import get_db
 from app.schemas.communications import (
     CommunicationTemplateOut,
     CommunicationTemplateUpdate,
+    ManualReminderOptionOut,
+    ManualReminderSendOut,
+    ManualReminderSendRequest,
     MessageGroupingPreviewOut,
     MessageGroupingPreviewRequest,
     OtherTemplateDedupeOut,
@@ -122,6 +125,30 @@ async def get_template_by_slug(
     return _template_out(row)
 
 
+@router.get(
+    "/api/reminders/manual-options",
+    response_model=list[ManualReminderOptionOut],
+)
+async def list_manual_reminder_options(
+    appointment_id: uuid.UUID = Query(...),
+    db: AsyncSession = Depends(get_db),
+    ctx: StaffContext = Depends(get_staff_context),
+):
+    return await svc.list_manual_reminder_options(db, ctx, appointment_id)
+
+
+@router.post(
+    "/api/reminders/manual-send",
+    response_model=ManualReminderSendOut,
+)
+async def send_manual_reminder(
+    body: ManualReminderSendRequest,
+    db: AsyncSession = Depends(get_db),
+    ctx: StaffContext = Depends(get_staff_context),
+):
+    return await svc.send_manual_reminder(db, ctx, body)
+
+
 @router.get("/api/communication-templates/{template_id}", response_model=CommunicationTemplateOut)
 async def get_template(
     template_id: uuid.UUID,
@@ -227,6 +254,21 @@ async def delete_step(
     ctx: StaffContext = Depends(get_staff_context),
 ):
     await svc.delete_step(db, ctx, template_id, step_id)
+
+
+@router.post(
+    "/api/communication-templates/{template_id}/copy-for-location",
+    response_model=CommunicationTemplateOut,
+    status_code=status.HTTP_201_CREATED,
+)
+async def copy_template_for_location(
+    template_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    ctx: StaffContext = Depends(get_staff_context),
+):
+    """Copy and edit template for only this location."""
+    row = await svc.copy_template_for_this_location(db, ctx, template_id)
+    return _template_out(row)
 
 
 @router.get("/api/template-configurations", response_model=TemplateConfigurationOut)

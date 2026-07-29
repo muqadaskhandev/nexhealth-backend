@@ -31,6 +31,7 @@ class TemplateStepUpdate(BaseModel):
     timing_value: int | None = None
     timing_unit: str | None = None
     condition_label: str | None = None
+    meta: dict | None = None
 
 
 class TemplateStepCreate(BaseModel):
@@ -38,6 +39,31 @@ class TemplateStepCreate(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     body: str = ""
     subject: str = ""
+    subtitle: str = ""
+    timing_value: int | None = None
+    timing_unit: str | None = None
+    condition_label: str | None = None
+    meta: dict = Field(default_factory=dict)
+
+
+class ManualReminderOptionOut(BaseModel):
+    step_id: uuid.UUID
+    template_id: uuid.UUID
+    title: str
+    kind: str
+    timing_label: str = ""
+
+
+class ManualReminderSendRequest(BaseModel):
+    appointment_id: uuid.UUID
+    step_id: uuid.UUID
+
+
+class ManualReminderSendOut(BaseModel):
+    ok: bool = True
+    channel: str
+    body: str
+    delivery_status: str
 
 
 class CommunicationTemplateOut(BaseModel):

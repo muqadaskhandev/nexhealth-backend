@@ -29,6 +29,9 @@ from app.models.location import Location
 from app.models.staff import Appointment, Patient
 from app.schemas.communications import (
     CommunicationTemplateUpdate,
+    ManualReminderOptionOut,
+    ManualReminderSendOut,
+    ManualReminderSendRequest,
     OutOfOfficeSettingsUpdate,
     SavedResponseCreate,
     SavedResponseUpdate,
@@ -40,6 +43,13 @@ from app.schemas.communications import (
     TemplateStepUpdate,
     TemplateVariantToggle,
 )
+
+SMS_BODY_MAX_CHARS = 425
+SEND_CONDITION_LABELS = {
+    "unconfirmed": "Send if unconfirmed",
+    "confirmed": "Send if confirmed",
+    "either": "Send if confirmed or unconfirmed",
+}
 
 # Template slugs that support per-appointment-type customization (Appointment Journeys + related).
 CUSTOMIZABLE_SLUGS = frozenset(
@@ -138,7 +148,16 @@ _DEFAULT_TEMPLATES: list[dict] = [
                 "kind": TemplateStepKind.EMAIL,
                 "title": "Reminders Email",
                 "subject": "Your appointment with {{LOCATION_NAME}} is {{APPOINTMENT_TIME}}",
-                "body": "We look forward to seeing you soon!\n\nYour appointment with {{LOCATION_NAME}} is coming up soon, {{PATIENT_FIRST_NAME}}. Here are all the details:",
+                "body": (
+                    "We look forward to seeing you soon!\n\n"
+                    "Your appointment with {{LOCATION_NAME}} is coming up soon, {{PATIENT_FIRST_NAME}}. "
+                    "Here are all the details:\n\n"
+                    "{{APPOINTMENT_DETAILS}}\n\n"
+                    "{{CONFIRM_APPOINTMENT}}\n"
+                    "{{APPOINTMENT_REGISTRATION}}"
+                ),
+                "condition_label": "Send if unconfirmed",
+                "meta": {"send_condition": "unconfirmed"},
                 "position": 1,
             },
             {
@@ -151,6 +170,8 @@ _DEFAULT_TEMPLATES: list[dict] = [
                     "Reply C to confirm: {{INSERTCONFIRMAPPT}}\n"
                     "{{APPOINTMENT_REGISTRATION}}"
                 ),
+                "condition_label": "Send if unconfirmed",
+                "meta": {"send_condition": "unconfirmed"},
                 "position": 2,
             },
         ],
@@ -368,6 +389,7 @@ async def _ensure_templates_seeded(db: AsyncSession, ctx: StaffContext) -> None:
                     timing_unit=step.get("timing_unit"),
                     condition_label=step.get("condition_label"),
                     position=step["position"],
+                    meta=dict(step.get("meta") or {}),
                 )
             )
 
@@ -397,6 +419,21 @@ async def list_templates(
         stmt = stmt.where(CommunicationTemplate.appointment_type_id.is_not(None))
 
     rows = list(await db.scalars(stmt))
+
+    # Prefer location-scoped copies over multi-location shared templates for the same slug.
+    if scope == "default":
+        best: dict[str, CommunicationTemplate] = {}
+        for row in rows:
+            key = row.slug
+            existing = best.get(key)
+            if existing is None:
+                best[key] = row
+            elif existing.multi_location and not row.multi_location:
+                best[key] = row
+            elif existing.multi_location == row.multi_location and row.created_at > existing.created_at:
+                best[key] = row
+        rows = list(best.values())
+        rows.sort(key=lambda r: r.name)
 
     # Attach appointment type names for variants
     type_ids = {r.appointment_type_id for r in rows if r.appointment_type_id}
@@ -452,6 +489,8 @@ async def get_template_by_slug(
             CommunicationTemplate.location_id == ctx.location_id,
         )
         .options(selectinload(CommunicationTemplate.steps))
+        # Prefer a location-scoped copy over a multi-location shared template.
+        .order_by(CommunicationTemplate.multi_location.asc(), CommunicationTemplate.created_at.desc())
     )
     if appointment_type_id is None:
         stmt = stmt.where(CommunicationTemplate.appointment_type_id.is_(None))
@@ -603,6 +642,40 @@ async def update_template(
     return await get_template(db, ctx, template_id)
 
 
+def _sms_char_count(text: str) -> int:
+    """Approximate SMS length: BMP emoji / symbols often count as 2."""
+    total = 0
+    for ch in text or "":
+        code = ord(ch)
+        if code > 0xFFFF or 0x1F300 <= code <= 0x1FAFF or 0x2600 <= code <= 0x27BF:
+            total += 2
+        else:
+            total += 1
+    return total
+
+
+def _validate_sms_body(body: str) -> None:
+    if _sms_char_count(body) > SMS_BODY_MAX_CHARS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"SMS messages are limited to {SMS_BODY_MAX_CHARS} characters. "
+            "Emojis and some special characters count as two characters.",
+        )
+
+
+def _condition_key_from_label(label: str | None) -> str | None:
+    if not label:
+        return None
+    lowered = label.lower()
+    if "unconfirmed" in lowered and "confirmed" in lowered and "or" in lowered:
+        return "either"
+    if "unconfirmed" in lowered:
+        return "unconfirmed"
+    if "confirmed" in lowered:
+        return "confirmed"
+    return None
+
+
 async def update_step(
     db: AsyncSession,
     ctx: StaffContext,
@@ -614,7 +687,12 @@ async def update_step(
     step = next((s for s in tmpl.steps if s.id == step_id), None)
     if not step:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Step not found")
-    for field, value in data.model_dump(exclude_unset=True).items():
+    payload = data.model_dump(exclude_unset=True)
+    if "body" in payload and step.kind == TemplateStepKind.SMS:
+        _validate_sms_body(payload["body"] or "")
+    if "meta" in payload and payload["meta"] is not None:
+        step.meta = dict(payload.pop("meta") or {})
+    for field, value in payload.items():
         setattr(step, field, value)
     await db.commit()
     await db.refresh(step)
@@ -630,13 +708,41 @@ async def add_step(
     tmpl = await get_template(db, ctx, template_id)
     next_pos = max((s.position for s in tmpl.steps), default=-1) + 1
     kind = TemplateStepKind.EMAIL if data.kind == "email" else TemplateStepKind.SMS
+    if kind == TemplateStepKind.SMS:
+        _validate_sms_body(data.body or "")
+
+    meta = dict(data.meta or {})
+    send_condition = meta.get("send_condition")
+    if isinstance(send_condition, str) and send_condition in SEND_CONDITION_LABELS:
+        # Tag existing untagged message steps so the sequence can fork by confirmation status.
+        trigger = next((s for s in tmpl.steps if s.kind == TemplateStepKind.TRIGGER), None)
+        primary = _condition_key_from_label(trigger.condition_label if trigger else None) or "unconfirmed"
+        for existing in tmpl.steps:
+            if existing.kind not in (TemplateStepKind.EMAIL, TemplateStepKind.SMS):
+                continue
+            existing_meta = dict(existing.meta or {})
+            if not existing_meta.get("send_condition"):
+                existing_meta["send_condition"] = primary
+                existing.meta = existing_meta
+                if not existing.condition_label:
+                    existing.condition_label = SEND_CONDITION_LABELS[primary]
+
+    condition_label = data.condition_label
+    if not condition_label and isinstance(send_condition, str):
+        condition_label = SEND_CONDITION_LABELS.get(send_condition)
+
     step = CommunicationTemplateStep(
         template_id=tmpl.id,
         kind=kind,
         title=data.title,
+        subtitle=data.subtitle or "",
         body=data.body,
         subject=data.subject,
+        timing_value=data.timing_value,
+        timing_unit=data.timing_unit,
+        condition_label=condition_label,
         position=next_pos,
+        meta=meta,
     )
     db.add(step)
     await db.commit()
@@ -658,6 +764,253 @@ async def delete_step(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cannot delete trigger step")
     await db.delete(step)
     await db.commit()
+
+
+async def copy_template_for_this_location(
+    db: AsyncSession,
+    ctx: StaffContext,
+    template_id: uuid.UUID,
+) -> CommunicationTemplate:
+    """Clone a multi-location template so edits apply only to the current location."""
+    source = await get_template(db, ctx, template_id)
+    if not source.multi_location:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This template is already scoped to a single location",
+        )
+
+    clone = CommunicationTemplate(
+        practice_id=ctx.practice_id,
+        location_id=ctx.location_id,
+        slug=source.slug,
+        name=f"{source.name} (this location)",
+        description=source.description,
+        category=source.category,
+        is_active=source.is_active,
+        total_sent=0,
+        recipients=0,
+        multi_location=False,
+        appointment_type_id=source.appointment_type_id,
+    )
+    db.add(clone)
+    await db.flush()
+    for step in source.steps:
+        db.add(
+            CommunicationTemplateStep(
+                template_id=clone.id,
+                kind=step.kind,
+                title=step.title,
+                subtitle=step.subtitle,
+                body=step.body,
+                subject=step.subject,
+                timing_value=step.timing_value,
+                timing_unit=step.timing_unit,
+                condition_label=step.condition_label,
+                position=step.position,
+                meta=dict(step.meta or {}),
+            )
+        )
+    # Keep the shared template for other locations; this location will prefer the clone.
+    await db.commit()
+    return await get_template(db, ctx, clone.id)
+
+
+def _fill_reminder_tokens(
+    text: str,
+    *,
+    patient: Patient,
+    appointment: Appointment,
+    location_name: str,
+) -> str:
+    appt_date = appointment.starts_at.strftime("%b %d, %Y")
+    appt_time = appointment.starts_at.strftime("%I:%M %p").lstrip("0")
+    details = (
+        f"{patient.first_name} — {appt_date} at {appt_time} "
+        f"({appointment.appointment_type})"
+    )
+    replacements = {
+        "{{PATIENT_FIRST_NAME}}": patient.first_name or "",
+        "{{PATIENT_LAST_NAME}}": patient.last_name or "",
+        "{{LOCATION_NAME}}": location_name,
+        "{{APPOINTMENT_DATE}}": appt_date,
+        "{{APPOINTMENT_TIME}}": appt_time,
+        "{{APPOINTMENT_DETAILS}}": details,
+        "{{APPOINTMENT_TYPE}}": appointment.appointment_type or "",
+        "{{INSERTCONFIRMAPPT}}": 'Reply "C" to confirm or "N" to cancel',
+        "{{CONFIRM_APPOINTMENT}}": "[Confirm appointment]",
+        "{{APPOINTMENT_REGISTRATION}}": "[Confirm appointment & forms]",
+        "{{PROVIDER_NAME}}": appointment.provider_name or "",
+    }
+    out = text or ""
+    for token, value in replacements.items():
+        out = out.replace(token, value)
+    return out
+
+
+async def _resolve_reminders_template_for_appointment(
+    db: AsyncSession,
+    ctx: StaffContext,
+    appointment: Appointment,
+) -> CommunicationTemplate:
+    await _ensure_templates_seeded(db, ctx)
+    if appointment.appointment_type_def_id:
+        variant = await db.scalar(
+            select(CommunicationTemplate)
+            .where(
+                CommunicationTemplate.location_id == ctx.location_id,
+                CommunicationTemplate.slug == "reminders",
+                CommunicationTemplate.appointment_type_id == appointment.appointment_type_def_id,
+                CommunicationTemplate.is_active.is_(True),
+            )
+            .options(selectinload(CommunicationTemplate.steps))
+        )
+        if variant:
+            return variant
+    return await get_template_by_slug(db, ctx, "reminders")
+
+
+async def list_manual_reminder_options(
+    db: AsyncSession,
+    ctx: StaffContext,
+    appointment_id: uuid.UUID,
+) -> list[ManualReminderOptionOut]:
+    appointment = await db.get(Appointment, appointment_id)
+    if (
+        not appointment
+        or appointment.practice_id != ctx.practice_id
+        or appointment.location_id != ctx.location_id
+    ):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Appointment not found")
+
+    tmpl = await _resolve_reminders_template_for_appointment(db, ctx, appointment)
+    trigger = next((s for s in tmpl.steps if s.kind == TemplateStepKind.TRIGGER), None)
+    timing_label = ""
+    if trigger and trigger.timing_value is not None and trigger.timing_unit:
+        timing_label = f"{trigger.timing_value} {trigger.timing_unit} reminder"
+    elif trigger and trigger.subtitle:
+        timing_label = trigger.subtitle
+
+    options: list[ManualReminderOptionOut] = []
+    for step in tmpl.steps:
+        if step.kind not in (TemplateStepKind.EMAIL, TemplateStepKind.SMS):
+            continue
+        label = step.title
+        if step.timing_value is not None and step.timing_unit:
+            label = f"{step.timing_value} {step.timing_unit} reminder"
+        elif timing_label and "reminder" in timing_label.lower():
+            # Prefer cadence labels like "1 day reminder" for the manual picker.
+            if step.kind == TemplateStepKind.SMS:
+                label = timing_label.replace("Reminders", "reminder").replace("reminders", "reminder")
+            else:
+                label = f"{timing_label} (email)"
+        options.append(
+            ManualReminderOptionOut(
+                step_id=step.id,
+                template_id=tmpl.id,
+                title=label,
+                kind=step.kind.value if hasattr(step.kind, "value") else str(step.kind),
+                timing_label=timing_label or step.subtitle or step.title,
+            )
+        )
+    # Also expose distinct cadence titles from sibling reminder steps (1 day / 1 week).
+    # Seed only has one trigger cadence; synthesize common manual choices from titles.
+    if options and not any("1 day" in o.title.lower() for o in options):
+        first = options[0]
+        options.insert(
+            0,
+            ManualReminderOptionOut(
+                step_id=first.step_id,
+                template_id=first.template_id,
+                title="1 day reminder",
+                kind=first.kind,
+                timing_label="1 day reminder",
+            ),
+        )
+    return options
+
+
+async def send_manual_reminder(
+    db: AsyncSession,
+    ctx: StaffContext,
+    data: ManualReminderSendRequest,
+) -> ManualReminderSendOut:
+    appointment = await db.get(Appointment, data.appointment_id)
+    if (
+        not appointment
+        or appointment.practice_id != ctx.practice_id
+        or appointment.location_id != ctx.location_id
+    ):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Appointment not found")
+
+    patient = await db.get(Patient, appointment.patient_id)
+    if not patient:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Patient not found")
+
+    tmpl = await _resolve_reminders_template_for_appointment(db, ctx, appointment)
+    step = next((s for s in tmpl.steps if s.id == data.step_id), None)
+    if not step or step.kind not in (TemplateStepKind.EMAIL, TemplateStepKind.SMS):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Reminder step not found")
+
+    loc = await db.get(Location, ctx.location_id)
+    location_name = loc.name if loc else ""
+    body = _fill_reminder_tokens(
+        step.body or step.subject or "",
+        patient=patient,
+        appointment=appointment,
+        location_name=location_name,
+    )
+    if step.kind == TemplateStepKind.EMAIL and step.subject:
+        subject = _fill_reminder_tokens(
+            step.subject, patient=patient, appointment=appointment, location_name=location_name
+        )
+        body = f"{subject}\n\n{body}" if body else subject
+
+    channel = "email" if step.kind == TemplateStepKind.EMAIL else "sms"
+    if channel == "sms":
+        _validate_sms_body(body)
+
+    from app.schemas.staff import SendMessageRequest
+    from app.services.staff_service import send_message
+
+    msg = await send_message(
+        db,
+        ctx,
+        SendMessageRequest(patient_id=patient.id, body=body, channel=channel),
+    )
+
+    label = step.title
+    if "reminder" not in label.lower():
+        label = f"Manual: {label}"
+    else:
+        label = f"Manual: {label}" if not label.lower().startswith("manual") else label
+
+    db.add(
+        TemplateAutomationSend(
+            practice_id=ctx.practice_id,
+            location_id=ctx.location_id,
+            template_id=tmpl.id,
+            patient_id=patient.id,
+            patient_name=f"{patient.first_name} {patient.last_name}".strip(),
+            patient_dob=patient.dob,
+            communication_label=label,
+            channel=channel,
+            sent_at=datetime.now(timezone.utc),
+            provider_name=appointment.provider_name,
+            appointment_at=appointment.starts_at,
+        )
+    )
+    tmpl.total_sent = (tmpl.total_sent or 0) + 1
+    await db.commit()
+
+    delivery = getattr(msg, "delivery_status", None)
+    delivery_status = delivery.value if hasattr(delivery, "value") else (delivery or "delivered")
+
+    return ManualReminderSendOut(
+        ok=True,
+        channel=channel,
+        body=body,
+        delivery_status=str(delivery_status),
+    )
 
 
 async def get_or_create_config(db: AsyncSession, ctx: StaffContext) -> TemplateConfiguration:

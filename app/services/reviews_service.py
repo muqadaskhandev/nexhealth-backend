@@ -177,32 +177,52 @@ async def list_review_performance(
             )
         )
     )
+    patient_ids = {r.patient_id for r in rows if r.patient_id}
+    names: dict[uuid.UUID, str] = {}
+    if patient_ids:
+        for p in await db.scalars(select(Patient).where(Patient.id.in_(patient_ids))):
+            names[p.id] = f"{p.first_name} {p.last_name}".strip() or "Patient"
+
     by_rating = {i: 0 for i in range(1, 6)}
     google = 0
     feedback_count = 0
+    negative_count = 0
+    positive_count = 0
     for r in rows:
         by_rating[r.rating] = by_rating.get(r.rating, 0) + 1
-        if r.google_prompted:
+        if r.google_prompted or r.rating >= DEFAULT_GOOGLE_MIN_RATING:
             google += 1
+            positive_count += 1
+        else:
+            negative_count += 1
         if (r.feedback_text or "").strip():
             feedback_count += 1
+
+    def _row_out(r: ReviewResponse) -> dict:
+        return {
+            "id": str(r.id),
+            "rating": r.rating,
+            "feedback_text": r.feedback_text,
+            "google_prompted": r.google_prompted,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+            "appointment_id": str(r.appointment_id) if r.appointment_id else None,
+            "patient_id": str(r.patient_id) if r.patient_id else None,
+            "patient_name": names.get(r.patient_id, "Patient") if r.patient_id else "Patient",
+            "is_positive": r.rating >= DEFAULT_GOOGLE_MIN_RATING,
+        }
+
+    ordered = sorted(
+        rows,
+        key=lambda x: x.created_at or datetime.min.replace(tzinfo=timezone.utc),
+        reverse=True,
+    )
     return {
         "total_ratings": len(rows),
         "by_rating": by_rating,
         "google_prompts": google,
         "internal_feedback": feedback_count,
+        "positive_count": positive_count,
+        "negative_count": negative_count,
         "google_min_rating": DEFAULT_GOOGLE_MIN_RATING,
-        "recent": [
-            {
-                "id": str(r.id),
-                "rating": r.rating,
-                "feedback_text": r.feedback_text,
-                "google_prompted": r.google_prompted,
-                "created_at": r.created_at.isoformat() if r.created_at else None,
-                "appointment_id": str(r.appointment_id) if r.appointment_id else None,
-            }
-            for r in sorted(rows, key=lambda x: x.created_at or datetime.min.replace(tzinfo=timezone.utc), reverse=True)[
-                :20
-            ]
-        ],
+        "recent": [_row_out(r) for r in ordered[:40]],
     }

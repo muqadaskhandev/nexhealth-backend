@@ -126,6 +126,7 @@ class AppointmentUpdate(BaseModel):
     forms_status: str | None = None
     starts_at: datetime | None = None
     duration_minutes: int | None = None
+    meta: dict[str, Any] | None = None
 
 
 class WaitlistOut(BaseModel):

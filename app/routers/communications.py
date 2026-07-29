@@ -182,6 +182,23 @@ async def list_template_history(
     return [TemplateAutomationHistoryOut.model_validate(r) for r in rows]
 
 
+@router.get("/api/communication-templates/{template_id}/review-performance")
+async def review_performance(
+    template_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    ctx: StaffContext = Depends(get_staff_context),
+):
+    """Reviews Performance tab — ratings, Google prompts, internal feedback."""
+    tmpl = await svc.get_template(db, ctx, template_id)
+    if tmpl.slug != "reviews" and not tmpl.slug.startswith("reviews"):
+        return {"total_ratings": 0, "by_rating": {}, "google_prompts": 0, "internal_feedback": 0, "recent": []}
+    from app.services import reviews_service
+
+    return await reviews_service.list_review_performance(
+        db, practice_id=ctx.practice_id, location_id=ctx.location_id
+    )
+
+
 @router.patch("/api/communication-templates/{template_id}", response_model=CommunicationTemplateOut)
 async def update_template(
     template_id: uuid.UUID,

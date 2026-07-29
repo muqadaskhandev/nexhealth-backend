@@ -441,6 +441,10 @@ async def update_appointment(
     if "forms_status" in payload:
         appt.forms_status = FormsStatus(payload["forms_status"])
         del payload["forms_status"]
+    if "meta" in payload and payload["meta"] is not None:
+        merged = dict(appt.meta or {})
+        merged.update(payload.pop("meta") or {})
+        appt.meta = merged
     for k, v in payload.items():
         setattr(appt, k, v)
     await db.flush()

@@ -138,6 +138,35 @@ class TemplateAutomationSend(Base):
     )
 
 
+class ReviewResponse(Base):
+    """Patient 1–5 survey rating from Reviews (Google prompt vs internal feedback)."""
+
+    __tablename__ = "review_responses"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    practice_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("practices.id", ondelete="CASCADE"), index=True
+    )
+    location_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("locations.id", ondelete="CASCADE"), index=True
+    )
+    appointment_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("appointments.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    patient_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("patients.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    rating: Mapped[int] = mapped_column(Integer, nullable=False)
+    feedback_text: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    google_prompted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
 class TemplateConfiguration(Base):
     """Per-location sending hours for automated SMS templates."""
 

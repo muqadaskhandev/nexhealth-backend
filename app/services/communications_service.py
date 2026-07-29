@@ -62,6 +62,7 @@ CUSTOMIZABLE_SLUGS = frozenset(
         "reminders",
         "post-appointment-follow-up",
         "recalls",
+        "reviews",
         "appointment-request",
         "appointment-confirmed",
         "save-the-date",
@@ -212,15 +213,58 @@ _DEFAULT_TEMPLATES: list[dict] = [
     {
         "slug": "reviews",
         "name": "Reviews",
-        "description": "At 7:30pm, for every patient who had an appointment on the calendar and kept their appointment (did not cancel, reschedule, or no-show).",
+        "description": (
+            "By default, reviews are sent every evening at 7:30 PM to patients seen that day with "
+            "completed appointments, once every six months. Patients are asked to rate their experience "
+            "from 1–5; those who select 4 or 5 are prompted with a link to leave a Google review. "
+            "NexHealth does NOT post directly to Google — the patient must post their review. "
+            "Do not remove INSERTSURVEYRATING; that creates the Google Review experience."
+        ),
         "category": TemplateCategory.DAILY,
         "is_active": True,
         "total_sent": 36,
         "recipients": 26,
         "steps": [
-            {"kind": TemplateStepKind.TRIGGER, "title": "Appointment completed", "subtitle": "Daily at 7:30 PM", "position": 0},
-            {"kind": TemplateStepKind.EMAIL, "title": "Reviews Email", "subject": "How was your visit?", "body": "Hi {{PATIENT_FIRST_NAME}}, thanks for visiting {{LOCATION_NAME}}. We'd love your feedback!", "position": 1},
-            {"kind": TemplateStepKind.SMS, "title": "Reviews SMS", "body": "Thanks for visiting {{LOCATION_NAME}}! Leave a review: {{REVIEW_LINK}}", "position": 2},
+            {
+                "kind": TemplateStepKind.TRIGGER,
+                "title": "Next action",
+                "subtitle": "Daily at 7:30 PM",
+                "timing_value": 1930,
+                "timing_unit": "clock",
+                "position": 0,
+                "meta": {"send_time": "19:30", "trigger": "appointment_completed"},
+            },
+            {
+                "kind": TemplateStepKind.TRIGGER,
+                "title": "Send to patients",
+                "subtitle": "Once every 6 months",
+                "timing_value": 6,
+                "timing_unit": "month",
+                "position": 1,
+                "meta": {"frequency_months": 6, "tile": "frequency"},
+            },
+            {
+                "kind": TemplateStepKind.EMAIL,
+                "title": "Reviews Email",
+                "subject": "How was your visit at {{LOCATION_NAME}}?",
+                "body": (
+                    "Hi {{PATIENT_FIRST_NAME}},\n\n"
+                    "Thanks for visiting {{LOCATION_NAME}}. How was your appointment?\n\n"
+                    "{{INSERTSURVEYRATING}}\n\n"
+                    "We appreciate your feedback!"
+                ),
+                "position": 2,
+            },
+            {
+                "kind": TemplateStepKind.SMS,
+                "title": "Reviews SMS",
+                "body": (
+                    "{{LOCATION_NAME}}? Reply from 1 to 5, with 5 being the best.\n\n"
+                    "{{INSERTSURVEYRATING}}\n\n"
+                    "To unsubscribe, reply STOP"
+                ),
+                "position": 3,
+            },
         ],
     },
     {
@@ -612,6 +656,87 @@ async def _ensure_templates_seeded(db: AsyncSession, ctx: StaffContext) -> None:
 
     # Existing installs: ensure EHR custom continuing-care Recall exists for Custom tab
     await _ensure_ehr_custom_recalls(db, ctx)
+    await _ensure_reviews_template_upgraded(db, ctx)
+
+
+async def _ensure_reviews_template_upgraded(db: AsyncSession, ctx: StaffContext) -> None:
+    """Upgrade legacy Reviews seed: survey token, 6-month frequency tile, description."""
+    tmpl = await db.scalar(
+        select(CommunicationTemplate)
+        .where(
+            CommunicationTemplate.location_id == ctx.location_id,
+            CommunicationTemplate.slug == "reviews",
+            CommunicationTemplate.appointment_type_id.is_(None),
+        )
+        .options(selectinload(CommunicationTemplate.steps))
+    )
+    if not tmpl:
+        return
+    reviews_spec = next((s for s in _DEFAULT_TEMPLATES if s["slug"] == "reviews"), None)
+    if not reviews_spec:
+        return
+    changed = False
+    if "INSERTSURVEYRATING" not in (tmpl.description or ""):
+        tmpl.description = reviews_spec["description"]
+        changed = True
+    bodies = " ".join((s.body or "") + (s.subject or "") for s in tmpl.steps)
+    if "INSERTSURVEYRATING" not in bodies and "SURVEY_SMS_RATING" not in bodies:
+        for step in tmpl.steps:
+            if step.kind == TemplateStepKind.SMS:
+                step.body = next(
+                    (s["body"] for s in reviews_spec["steps"] if s["kind"] == TemplateStepKind.SMS),
+                    step.body,
+                )
+                changed = True
+            if step.kind == TemplateStepKind.EMAIL and "INSERTSURVEYRATING" not in (step.body or ""):
+                email_spec = next(
+                    (s for s in reviews_spec["steps"] if s["kind"] == TemplateStepKind.EMAIL),
+                    None,
+                )
+                if email_spec:
+                    step.body = email_spec["body"]
+                    step.subject = email_spec.get("subject", step.subject)
+                    changed = True
+    has_freq = any(
+        (s.title or "").lower().startswith("send to patients")
+        or (s.meta or {}).get("tile") == "frequency"
+        for s in tmpl.steps
+    )
+    if not has_freq:
+        freq = next(
+            (
+                s
+                for s in reviews_spec["steps"]
+                if (s.get("meta") or {}).get("tile") == "frequency"
+            ),
+            None,
+        )
+        if freq:
+            max_pos = max((s.position for s in tmpl.steps), default=-1)
+            # Insert frequency after first trigger: bump later steps
+            insert_at = 1
+            for s in tmpl.steps:
+                if s.position >= insert_at:
+                    s.position = s.position + 1
+            db.add(
+                CommunicationTemplateStep(
+                    template_id=tmpl.id,
+                    kind=freq["kind"],
+                    title=freq["title"],
+                    subtitle=freq.get("subtitle", ""),
+                    body=freq.get("body", ""),
+                    subject=freq.get("subject", ""),
+                    timing_value=freq.get("timing_value"),
+                    timing_unit=freq.get("timing_unit"),
+                    condition_label=freq.get("condition_label"),
+                    position=insert_at,
+                    meta=dict(freq.get("meta") or {}),
+                )
+            )
+            changed = True
+            _ = max_pos
+    if changed:
+        await db.commit()
 
 
 async def _ensure_ehr_custom_recalls(db: AsyncSession, ctx: StaffContext) -> None:
@@ -981,12 +1106,14 @@ async def add_step(
     next_pos = max((s.position for s in tmpl.steps), default=-1) + 1
 
     if data.kind == "trigger":
-        if tmpl.slug not in ("reminders", "recalls", "custom-continuing-care") and not tmpl.slug.startswith(
-            "custom-"
+        if (
+            tmpl.slug
+            not in ("reminders", "recalls", "reviews", "custom-continuing-care")
+            and not tmpl.slug.startswith("custom-")
         ):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Additional timing triggers are only supported on Reminders and Recalls",
+                detail="Additional timing triggers are only supported on Reminders, Recalls, and Reviews",
             )
         kind = TemplateStepKind.TRIGGER
     elif data.kind == "email":
@@ -1230,6 +1357,19 @@ def _fill_reminder_tokens(
     )
     insert_confirm_text = insert_confirm_appt_prompt(allow_cancel=allow_patient_cancel)
     link = booking_link or f"{settings.frontend_url}/appt/book"
+    review_page = (
+        f"{settings.frontend_url}/review/{appointment.id}"
+        if appointment.id
+        else f"{settings.frontend_url}/review"
+    )
+    survey_prompt = (
+        f"Rate your visit (1–5): {review_page}\n"
+        "Reply with a number from 1 to 5, with 5 being the best."
+    )
+    google_review_link = (
+        (appointment.meta or {}).get("google_review_url")
+        or f"https://www.google.com/search?q={location_name.replace(' ', '+')}+reviews"
+    )
     replacements = {
         "{{PATIENT_FIRST_NAME}}": patient.first_name or "",
         "{{PATIENT_LAST_NAME}}": patient.last_name or "",
@@ -1248,6 +1388,10 @@ def _fill_reminder_tokens(
         "{{PROVIDER_NAME}}": appointment.provider_name or "",
         "{{LOCATION_BOOKING_APPOINTMENT}}": link,
         "{{LOCATION_PHONE}}": "",
+        "{{INSERTSURVEYRATING}}": survey_prompt,
+        "{{SURVEY_SMS_RATING}}": survey_prompt,
+        "{{REVIEW_LINK}}": review_page,
+        "{{GOOGLE_REVIEW_LINK}}": str(google_review_link),
     }
     out = text or ""
     for token, value in replacements.items():
@@ -1334,6 +1478,26 @@ async def list_manual_reminder_options(
                 timing_label="1 day reminder",
             ),
         )
+
+    # Help-center: manually send Reviews from Home ellipsis → Review
+    reviews = await get_template_by_slug(db, ctx, "reviews")
+    if reviews and reviews.is_active:
+        review_step = next(
+            (s for s in reviews.steps if s.kind == TemplateStepKind.SMS),
+            next((s for s in reviews.steps if s.kind == TemplateStepKind.EMAIL), None),
+        )
+        if review_step:
+            options.append(
+                ManualReminderOptionOut(
+                    step_id=review_step.id,
+                    template_id=reviews.id,
+                    title="Review",
+                    kind=review_step.kind.value
+                    if hasattr(review_step.kind, "value")
+                    else str(review_step.kind),
+                    timing_label="Manual review request",
+                )
+            )
     return options
 
 
@@ -1354,10 +1518,24 @@ async def send_manual_reminder(
     if not patient:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Patient not found")
 
+    # Prefer reminders template; fall back to Reviews when step belongs there.
     tmpl = await _resolve_reminders_template_for_appointment(db, ctx, appointment)
     step = next((s for s in tmpl.steps if s.id == data.step_id), None)
+    if not step:
+        reviews = await get_template_by_slug(db, ctx, "reviews")
+        if reviews:
+            step = next((s for s in reviews.steps if s.id == data.step_id), None)
+            if step:
+                tmpl = reviews
     if not step or step.kind not in (TemplateStepKind.EMAIL, TemplateStepKind.SMS):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Reminder step not found")
+
+    # Per-appointment Reviews opt-out
+    if tmpl.slug == "reviews" and (appointment.meta or {}).get("reviews_enabled") is False:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Reviews are turned off for this appointment.",
+        )
 
     loc = await db.get(Location, ctx.location_id)
     location_name = loc.name if loc else ""
@@ -1368,28 +1546,7 @@ async def send_manual_reminder(
 
     from app.services.reminder_responses import subsequent_reminder_content_mode
 
-    send_cond = (step.meta or {}).get("send_condition") or _condition_key_from_label(step.condition_label)
-    send_to_confirmed = send_cond in ("confirmed", "either", None)
-    mode = subsequent_reminder_content_mode(
-        confirmed=appointment.status == AppointmentStatus.CONFIRMED,
-        forms_complete=appointment.forms_status == FormsStatus.COMPLETE,
-        send_to_confirmed=bool(send_to_confirmed),
-    )
-    if mode == "skip":
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                "Patient already confirmed and completed forms. Additional Reminders are skipped "
-                "unless the sequence is set to Send if confirmed or unconfirmed."
-            ),
-        )
-
-    if mode == "forms_only":
-        body = (
-            f"Hi {patient.first_name}, thanks for confirming your appointment at {location_name}. "
-            "Please complete your remaining forms before your visit."
-        )
-    else:
+    if tmpl.slug == "reviews":
         body = _fill_reminder_tokens(
             step.body or step.subject or "",
             patient=patient,
@@ -1406,6 +1563,45 @@ async def send_manual_reminder(
                 allow_patient_cancel=allow_cancel,
             )
             body = f"{subject}\n\n{body}" if body else subject
+    else:
+        send_cond = (step.meta or {}).get("send_condition") or _condition_key_from_label(step.condition_label)
+        send_to_confirmed = send_cond in ("confirmed", "either", None)
+        mode = subsequent_reminder_content_mode(
+            confirmed=appointment.status == AppointmentStatus.CONFIRMED,
+            forms_complete=appointment.forms_status == FormsStatus.COMPLETE,
+            send_to_confirmed=bool(send_to_confirmed),
+        )
+        if mode == "skip":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "Patient already confirmed and completed forms. Additional Reminders are skipped "
+                    "unless the sequence is set to Send if confirmed or unconfirmed."
+                ),
+            )
+
+        if mode == "forms_only":
+            body = (
+                f"Hi {patient.first_name}, thanks for confirming your appointment at {location_name}. "
+                "Please complete your remaining forms before your visit."
+            )
+        else:
+            body = _fill_reminder_tokens(
+                step.body or step.subject or "",
+                patient=patient,
+                appointment=appointment,
+                location_name=location_name,
+                allow_patient_cancel=allow_cancel,
+            )
+            if step.kind == TemplateStepKind.EMAIL and step.subject:
+                subject = _fill_reminder_tokens(
+                    step.subject,
+                    patient=patient,
+                    appointment=appointment,
+                    location_name=location_name,
+                    allow_patient_cancel=allow_cancel,
+                )
+                body = f"{subject}\n\n{body}" if body else subject
 
     channel = "email" if step.kind == TemplateStepKind.EMAIL else "sms"
     if channel == "sms":
@@ -1421,7 +1617,9 @@ async def send_manual_reminder(
     )
 
     label = step.title
-    if "reminder" not in label.lower():
+    if tmpl.slug == "reviews":
+        label = "Manual: Review"
+    elif "reminder" not in label.lower():
         label = f"Manual: {label}"
     else:
         label = f"Manual: {label}" if not label.lower().startswith("manual") else label

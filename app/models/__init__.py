@@ -13,6 +13,7 @@ from app.models.communications import (
     TemplateConfiguration,
     TemplateStepKind,
     TemplateAutomationSend,
+    ReviewResponse,
     SavedResponse,
     OutOfOfficeSettings,
     SmsRegistration,

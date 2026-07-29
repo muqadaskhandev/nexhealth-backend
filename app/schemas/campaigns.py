@@ -149,3 +149,26 @@ class CampaignAnalyticsOut(BaseModel):
 
 class CampaignStarUpdate(BaseModel):
     is_starred: bool
+
+
+class CampaignSendRequest(BaseModel):
+    """Optional overage acknowledgement when campaign SMS would exceed the monthly cap."""
+
+    allow_overage: bool = False
+
+
+class CampaignSmsCapOut(BaseModel):
+    location_id: uuid.UUID
+    year_month: str
+    included_cap: int
+    used: int
+    remaining: int
+    warning: bool
+    near_limit: bool
+    at_or_over_limit: bool
+    allow_overage: bool
+    overage_messages: int
+    overage_rate_usd: float
+    estimated_overage_cost_usd: float
+    # Copy for UI / help center
+    notes: dict[str, str]

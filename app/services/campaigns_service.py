@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.staff_context import StaffContext
-from app.models.campaigns import Campaign, CampaignSendLog, CampaignStatus
+from app.models.campaigns import Campaign, CampaignSendLog, CampaignSmsCapSettings, CampaignStatus
 from app.models.staff import Appointment, Patient, WaitlistEntry, WaitlistStatus
 from app.schemas.campaigns import (
     CampaignCopyRequest,
@@ -497,8 +497,239 @@ def generate_ai_copy(data: CampaignGenerateAiRequest) -> dict[str, str]:
     }
 
 
+# Monthly included SMS for Campaigns only (not Messages / templates / reminders)
+CAMPAIGN_SMS_MONTHLY_CAP = 5000
+CAMPAIGN_SMS_OVERAGE_RATE_USD = 0.012
+# Show warning banner when usage reaches this share of the cap
+CAMPAIGN_SMS_WARNING_RATIO = 0.8
+
+CAP_NOTES = {
+    "scope": (
+        "Your NexHealth subscription includes up to 5,000 SMS messages per location every month "
+        "via NexHealth Campaigns. This only applies to SMS messages sent via a Campaign."
+    ),
+    "why": (
+        "This is to protect your deliverability rates, while also reducing frustration and "
+        "unsubscribes from patients."
+    ),
+    "exclusions": (
+        "This 5,000 message limit does NOT include SMS messages for Reminders, Reviews, any "
+        "other template, or two-way texting with patients."
+    ),
+    "credits_not_recommended": (
+        "Purchasing credits is not recommended. Instead, we suggest using email for broad "
+        "communications and reserving SMS campaigns only for emergent information that is "
+        "directly relevant to specific patients, like sending a weather closure to patients "
+        "whose appointments need to be rescheduled."
+    ),
+    "overage_billing": (
+        "A warning banner will appear in the Campaigns tab when you approach the 5000 message "
+        "limit, and you can choose to incur the charge or not. Overage charges are added to "
+        "your next monthly NexHealth invoice."
+    ),
+    "templates_unaffected": (
+        "No. This limit is only for SMS Campaigns (not email) and is designed to ensure "
+        "optimum deliverability for mass messaging. Regular Messages and automated templates "
+        "are not affected."
+    ),
+}
+
+
+def _current_year_month(now: datetime | None = None) -> str:
+    dt = now or datetime.now(timezone.utc)
+    return f"{dt.year:04d}-{dt.month:02d}"
+
+
+def _month_bounds(year_month: str) -> tuple[datetime, datetime]:
+    year, month = map(int, year_month.split("-"))
+    start = datetime(year, month, 1, tzinfo=timezone.utc)
+    if month == 12:
+        end = datetime(year + 1, 1, 1, tzinfo=timezone.utc)
+    else:
+        end = datetime(year, month + 1, 1, tzinfo=timezone.utc)
+    return start, end
+
+
+async def _ensure_cap_settings(
+    db: AsyncSession, ctx: StaffContext, location_id: uuid.UUID
+) -> CampaignSmsCapSettings:
+    row = await db.scalar(
+        select(CampaignSmsCapSettings).where(
+            CampaignSmsCapSettings.practice_id == ctx.practice_id,
+            CampaignSmsCapSettings.location_id == location_id,
+        )
+    )
+    if row is not None:
+        return row
+    row = CampaignSmsCapSettings(
+        practice_id=ctx.practice_id,
+        location_id=location_id,
+        allow_overage=False,
+        overage_messages=0,
+    )
+    db.add(row)
+    await db.commit()
+    await db.refresh(row)
+    return row
+
+
+async def count_campaign_sms_used(
+    db: AsyncSession,
+    practice_id: uuid.UUID,
+    location_id: uuid.UUID,
+    year_month: str | None = None,
+) -> int:
+    ym = year_month or _current_year_month()
+    start, end = _month_bounds(ym)
+    logs = list(
+        await db.scalars(
+            select(CampaignSendLog).where(
+                CampaignSendLog.practice_id == practice_id,
+                CampaignSendLog.channel == "sms",
+                CampaignSendLog.status == "sent",
+                CampaignSendLog.sent_at >= start,
+                CampaignSendLog.sent_at < end,
+            )
+        )
+    )
+    # Prefer location_id on the log; fall back to patient.location_id for older rows
+    count = 0
+    missing_patient_ids: list[uuid.UUID] = []
+    for log in logs:
+        if log.location_id == location_id:
+            count += 1
+        elif log.location_id is None and log.patient_id:
+            missing_patient_ids.append(log.patient_id)
+    if missing_patient_ids:
+        patients = list(
+            await db.scalars(
+                select(Patient).where(
+                    Patient.id.in_(missing_patient_ids),
+                    Patient.location_id == location_id,
+                )
+            )
+        )
+        matched = {p.id for p in patients}
+        count += sum(1 for pid in missing_patient_ids if pid in matched)
+    return count
+
+
+async def get_sms_cap(
+    db: AsyncSession, ctx: StaffContext, location_id: uuid.UUID | None = None
+):
+    from app.schemas.campaigns import CampaignSmsCapOut
+
+    loc = location_id or ctx.location_id
+    ym = _current_year_month()
+    used = await count_campaign_sms_used(db, ctx.practice_id, loc, ym)
+    settings = await _ensure_cap_settings(db, ctx, loc)
+    remaining = max(0, CAMPAIGN_SMS_MONTHLY_CAP - used)
+    at_or_over = used >= CAMPAIGN_SMS_MONTHLY_CAP
+    near = used >= int(CAMPAIGN_SMS_MONTHLY_CAP * CAMPAIGN_SMS_WARNING_RATIO)
+    overage = max(0, used - CAMPAIGN_SMS_MONTHLY_CAP)
+    return CampaignSmsCapOut(
+        location_id=loc,
+        year_month=ym,
+        included_cap=CAMPAIGN_SMS_MONTHLY_CAP,
+        used=used,
+        remaining=remaining,
+        warning=near,
+        near_limit=near,
+        at_or_over_limit=at_or_over,
+        allow_overage=bool(settings.allow_overage),
+        overage_messages=int(settings.overage_messages or overage),
+        overage_rate_usd=CAMPAIGN_SMS_OVERAGE_RATE_USD,
+        estimated_overage_cost_usd=round(
+            max(overage, settings.overage_messages or 0) * CAMPAIGN_SMS_OVERAGE_RATE_USD, 2
+        ),
+        notes=CAP_NOTES,
+    )
+
+
+async def set_sms_cap_allow_overage(
+    db: AsyncSession, ctx: StaffContext, allow: bool, location_id: uuid.UUID | None = None
+):
+    loc = location_id or ctx.location_id
+    settings = await _ensure_cap_settings(db, ctx, loc)
+    settings.allow_overage = bool(allow)
+    await db.commit()
+    await db.refresh(settings)
+    return await get_sms_cap(db, ctx, loc)
+
+
+async def _check_sms_cap_for_send(
+    db: AsyncSession,
+    ctx: StaffContext,
+    campaign: Campaign,
+    patients: list[Patient],
+    *,
+    allow_overage: bool,
+) -> None:
+    """Raise if campaign SMS would exceed the monthly cap without overage consent."""
+    if not campaign.has_sms:
+        return
+
+    # Count would-be successful SMS per location
+    by_loc: dict[uuid.UUID, int] = {}
+    for p in patients:
+        prefs = p.notification_prefs or {}
+        ok = bool((p.phone or "").strip()) and prefs.get("sms") is not False
+        if not ok:
+            continue
+        loc = p.location_id or ctx.location_id
+        by_loc[loc] = by_loc.get(loc, 0) + 1
+
+    if not by_loc:
+        return
+
+    ym = _current_year_month()
+    blockers: list[dict[str, Any]] = []
+    for loc_id, new_count in by_loc.items():
+        used = await count_campaign_sms_used(db, ctx.practice_id, loc_id, ym)
+        settings = await _ensure_cap_settings(db, ctx, loc_id)
+        projected = used + new_count
+        if projected <= CAMPAIGN_SMS_MONTHLY_CAP:
+            continue
+        overage_needed = projected - CAMPAIGN_SMS_MONTHLY_CAP
+        if allow_overage or settings.allow_overage:
+            settings.allow_overage = True
+            settings.overage_messages = int(settings.overage_messages or 0) + overage_needed
+            continue
+        blockers.append(
+            {
+                "location_id": str(loc_id),
+                "used": used,
+                "new_messages": new_count,
+                "projected": projected,
+                "cap": CAMPAIGN_SMS_MONTHLY_CAP,
+                "overage_messages": overage_needed,
+                "overage_cost_usd": round(overage_needed * CAMPAIGN_SMS_OVERAGE_RATE_USD, 2),
+                "rate_usd": CAMPAIGN_SMS_OVERAGE_RATE_USD,
+            }
+        )
+
+    if blockers:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "campaign_sms_cap_exceeded",
+                "message": (
+                    "This SMS campaign would exceed the 5,000 monthly Campaign SMS cap for one "
+                    "or more locations. Purchasing credits is not recommended; prefer email for "
+                    "broad outreach. Additional SMS credits are $0.012/message and appear on "
+                    "your next invoice if you continue."
+                ),
+                "locations": blockers,
+            },
+        )
+
+
 async def send_campaign_now(
-    db: AsyncSession, ctx: StaffContext, campaign_id: uuid.UUID
+    db: AsyncSession,
+    ctx: StaffContext,
+    campaign_id: uuid.UUID,
+    *,
+    allow_overage: bool = False,
 ) -> Campaign:
     campaign = await get_campaign(db, ctx, campaign_id)
     if campaign.is_favorite_template:
@@ -526,6 +757,9 @@ async def send_campaign_now(
                 status_code=400,
                 detail="SMS registration incomplete — register your business before sending SMS campaigns",
             )
+        await _check_sms_cap_for_send(
+            db, ctx, campaign, patients, allow_overage=allow_overage
+        )
 
     now = datetime.now(timezone.utc)
     delivered_count = 0
@@ -533,6 +767,7 @@ async def send_campaign_now(
         name = f"{p.first_name} {p.last_name}".strip()
         # Deterministic engagement seed from patient id + index
         seed = (hash(str(p.id)) ^ (i * 17)) % 100
+        loc_id = p.location_id or ctx.location_id
 
         if campaign.has_email:
             delivered = bool((p.email or "").strip())
@@ -546,6 +781,7 @@ async def send_campaign_now(
                     campaign_id=campaign.id,
                     practice_id=ctx.practice_id,
                     patient_id=p.id,
+                    location_id=loc_id,
                     patient_name=name,
                     patient_email=p.email or "",
                     patient_phone=p.phone or "",
@@ -571,6 +807,7 @@ async def send_campaign_now(
                     campaign_id=campaign.id,
                     practice_id=ctx.practice_id,
                     patient_id=p.id,
+                    location_id=loc_id,
                     patient_name=name,
                     patient_email=p.email or "",
                     patient_phone=p.phone or "",
@@ -601,7 +838,12 @@ async def send_campaign_now(
 
 
 async def schedule_campaign(
-    db: AsyncSession, ctx: StaffContext, campaign_id: uuid.UUID, data: CampaignScheduleRequest
+    db: AsyncSession,
+    ctx: StaffContext,
+    campaign_id: uuid.UUID,
+    data: CampaignScheduleRequest,
+    *,
+    allow_overage: bool = False,
 ) -> Campaign:
     campaign = await get_campaign(db, ctx, campaign_id)
     if campaign.is_favorite_template:
@@ -613,6 +855,10 @@ async def schedule_campaign(
         raise HTTPException(status_code=400, detail="Schedule time must be in the future")
 
     patients = await resolve_audience_patients(db, ctx, campaign)
+    if campaign.has_sms:
+        await _check_sms_cap_for_send(
+            db, ctx, campaign, patients, allow_overage=allow_overage
+        )
     campaign.status = CampaignStatus.SCHEDULED.value
     campaign.scheduled_at = when
     campaign.recipient_count = len(patients)

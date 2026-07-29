@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import uuid
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Body, Depends, Query, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -19,7 +19,9 @@ from app.schemas.campaigns import (
     CampaignImage,
     CampaignOut,
     CampaignScheduleRequest,
+    CampaignSendRequest,
     CampaignSendTestRequest,
+    CampaignSmsCapOut,
     CampaignStarUpdate,
     CampaignUpdate,
 )
@@ -114,6 +116,24 @@ async def create_campaign(
     return _campaign_out(row)
 
 
+@router.get("/api/campaigns/sms-cap", response_model=CampaignSmsCapOut)
+async def get_campaign_sms_cap(
+    db: AsyncSession = Depends(get_db),
+    ctx: StaffContext = Depends(get_staff_context),
+):
+    """Monthly Campaign SMS usage for the active location (5,000 included)."""
+    return await svc.get_sms_cap(db, ctx)
+
+
+@router.post("/api/campaigns/sms-cap/allow-overage", response_model=CampaignSmsCapOut)
+async def allow_campaign_sms_overage(
+    body: CampaignSendRequest,
+    db: AsyncSession = Depends(get_db),
+    ctx: StaffContext = Depends(get_staff_context),
+):
+    return await svc.set_sms_cap_allow_overage(db, ctx, body.allow_overage)
+
+
 @router.get("/api/campaigns/{campaign_id}", response_model=CampaignOut)
 async def get_campaign(
     campaign_id: uuid.UUID,
@@ -203,10 +223,13 @@ async def generate_ai(
 @router.post("/api/campaigns/{campaign_id}/send", response_model=CampaignOut)
 async def send_campaign(
     campaign_id: uuid.UUID,
+    body: CampaignSendRequest = Body(default_factory=CampaignSendRequest),
     db: AsyncSession = Depends(get_db),
     ctx: StaffContext = Depends(get_staff_context),
 ):
-    row = await svc.send_campaign_now(db, ctx, campaign_id)
+    row = await svc.send_campaign_now(
+        db, ctx, campaign_id, allow_overage=body.allow_overage
+    )
     return _campaign_out(row)
 
 
@@ -214,10 +237,13 @@ async def send_campaign(
 async def schedule_campaign(
     campaign_id: uuid.UUID,
     body: CampaignScheduleRequest,
+    allow_overage: bool = Query(default=False),
     db: AsyncSession = Depends(get_db),
     ctx: StaffContext = Depends(get_staff_context),
 ):
-    row = await svc.schedule_campaign(db, ctx, campaign_id, body)
+    row = await svc.schedule_campaign(
+        db, ctx, campaign_id, body, allow_overage=allow_overage
+    )
     return _campaign_out(row)
 
 

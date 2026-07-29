@@ -91,6 +91,10 @@ class CampaignSendLog(Base):
     patient_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("patients.id", ondelete="SET NULL"), nullable=True
     )
+    # Location the SMS counts against for the monthly campaign SMS cap
+    location_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("locations.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     patient_name: Mapped[str] = mapped_column(String(200), nullable=False, default="")
     patient_email: Mapped[str] = mapped_column(String(200), nullable=False, default="")
     patient_phone: Mapped[str] = mapped_column(String(40), nullable=False, default="")
@@ -104,4 +108,25 @@ class CampaignSendLog(Base):
     responded: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     sent_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class CampaignSmsCapSettings(Base):
+    """Per-location overage opt-in for campaign SMS beyond the monthly included cap."""
+
+    __tablename__ = "campaign_sms_cap_settings"
+    __table_args__ = (UniqueConstraint("location_id", name="uq_campaign_sms_cap_location"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    practice_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("practices.id", ondelete="CASCADE"), index=True
+    )
+    location_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("locations.id", ondelete="CASCADE"), index=True
+    )
+    # User accepted overage charges ($0.012/message) for this location
+    allow_overage: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    overage_messages: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
     )

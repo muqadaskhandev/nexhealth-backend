@@ -29,10 +29,14 @@ from app.models.location import Location
 from app.models.staff import Appointment, Patient
 from app.schemas.communications import (
     CommunicationTemplateUpdate,
+    EarlyMorningOffsetOut,
+    EarlyMorningOffsetRequest,
     ManualReminderOptionOut,
     ManualReminderSendOut,
     ManualReminderSendRequest,
     OutOfOfficeSettingsUpdate,
+    ReminderSendPreviewOut,
+    ReminderSendPreviewRequest,
     SavedResponseCreate,
     SavedResponseUpdate,
     SmsRegistrationStatusUpdate,
@@ -707,7 +711,19 @@ async def add_step(
 ) -> CommunicationTemplateStep:
     tmpl = await get_template(db, ctx, template_id)
     next_pos = max((s.position for s in tmpl.steps), default=-1) + 1
-    kind = TemplateStepKind.EMAIL if data.kind == "email" else TemplateStepKind.SMS
+
+    if data.kind == "trigger":
+        if tmpl.slug != "reminders":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Additional timing triggers are only supported on Reminders",
+            )
+        kind = TemplateStepKind.TRIGGER
+    elif data.kind == "email":
+        kind = TemplateStepKind.EMAIL
+    else:
+        kind = TemplateStepKind.SMS
+
     if kind == TemplateStepKind.SMS:
         _validate_sms_body(data.body or "")
 
@@ -731,15 +747,27 @@ async def add_step(
     if not condition_label and isinstance(send_condition, str):
         condition_label = SEND_CONDITION_LABELS.get(send_condition)
 
+    timing_value = data.timing_value
+    timing_unit = data.timing_unit
+    subtitle = data.subtitle or ""
+    title = data.title
+    if kind == TemplateStepKind.TRIGGER:
+        timing_value = timing_value if timing_value is not None else 2
+        timing_unit = timing_unit or "hour"
+        if not subtitle:
+            subtitle = f"{timing_value} {timing_unit} Reminders"
+        if not title:
+            title = "Next action"
+
     step = CommunicationTemplateStep(
         template_id=tmpl.id,
         kind=kind,
-        title=data.title,
-        subtitle=data.subtitle or "",
+        title=title,
+        subtitle=subtitle,
         body=data.body,
         subject=data.subject,
-        timing_value=data.timing_value,
-        timing_unit=data.timing_unit,
+        timing_value=timing_value,
+        timing_unit=timing_unit,
         condition_label=condition_label,
         position=next_pos,
         meta=meta,
@@ -761,9 +789,107 @@ async def delete_step(
     if not step:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Step not found")
     if step.kind == TemplateStepKind.TRIGGER:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cannot delete trigger step")
+        triggers = [s for s in tmpl.steps if s.kind == TemplateStepKind.TRIGGER]
+        if len(triggers) <= 1:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cannot delete the only timing trigger",
+            )
     await db.delete(step)
     await db.commit()
+
+
+def _timing_delta(value: int, unit: str) -> timedelta:
+    unit = (unit or "hour").lower()
+    if unit in ("hour", "hours"):
+        return timedelta(hours=value)
+    if unit in ("day", "days"):
+        return timedelta(days=value)
+    if unit in ("week", "weeks"):
+        return timedelta(weeks=value)
+    if unit in ("month", "months"):
+        return timedelta(days=30 * value)
+    return timedelta(hours=value)
+
+
+def is_within_sending_hours(send_at: datetime, start: time, end: time) -> bool:
+    """True if the local clock time of send_at falls inside [start, end]."""
+    t = send_at.timetz().replace(tzinfo=None) if send_at.tzinfo else send_at.time()
+    # Normalize to time without tz
+    clock = time(t.hour, t.minute, t.second)
+    if start <= end:
+        return start <= clock <= end
+    # Overnight window (rare for templates)
+    return clock >= start or clock <= end
+
+
+async def preview_reminder_send(
+    db: AsyncSession,
+    ctx: StaffContext,
+    data: ReminderSendPreviewRequest,
+) -> ReminderSendPreviewOut:
+    """Evaluate whether a reminder would send or be blocked by template sending hours.
+
+    Reminders outside the window do not queue — they just do not go out.
+    Emails continue to send regardless of sending hours.
+    """
+    config = await get_or_create_config(db, ctx)
+    send_at = data.appointment_at - _timing_delta(data.timing_value, data.timing_unit)
+    if data.channel == "email":
+        return ReminderSendPreviewOut(
+            send_at=send_at,
+            within_sending_hours=True,
+            blocked=False,
+            reason="Emails continue to be sent outside template sending hours.",
+            sending_hours_start=config.sending_hours_start,
+            sending_hours_end=config.sending_hours_end,
+            queues_when_outside=False,
+        )
+
+    within = is_within_sending_hours(
+        send_at, config.sending_hours_start, config.sending_hours_end
+    )
+    if within:
+        reason = "Reminder would send — scheduled time is within template sending hours."
+    else:
+        reason = (
+            "Reminder would be blocked from sending. Reminders do not send outside of the set hours "
+            "and do not queue until a suitable time — they just do not go out."
+        )
+    return ReminderSendPreviewOut(
+        send_at=send_at,
+        within_sending_hours=within,
+        blocked=not within,
+        reason=reason,
+        sending_hours_start=config.sending_hours_start,
+        sending_hours_end=config.sending_hours_end,
+        queues_when_outside=False,
+    )
+
+
+def compute_early_morning_offset(data: EarlyMorningOffsetRequest) -> EarlyMorningOffsetOut:
+    """(Difference between prior evening end of send times and earliest appt) + buffer hours."""
+    end_mins = data.sending_hours_end.hour * 60 + data.sending_hours_end.minute
+    appt_mins = data.earliest_appointment.hour * 60 + data.earliest_appointment.minute
+    # From end-of-day send window to next day's earliest appointment
+    diff_mins = (24 * 60 - end_mins) + appt_mins
+    difference_hours = int(round(diff_mins / 60))
+    hours_prior = difference_hours + data.buffer_hours
+    end_label = data.sending_hours_end.strftime("%I:%M %p").lstrip("0")
+    appt_label = data.earliest_appointment.strftime("%I:%M %p").lstrip("0")
+    return EarlyMorningOffsetOut(
+        hours_prior=hours_prior,
+        difference_hours=difference_hours,
+        buffer_hours=data.buffer_hours,
+        formula=(
+            f"(Difference between {{{end_label}}} and {{{appt_label}}}) "
+            f"+ {data.buffer_hours} hr"
+        ),
+        explanation=(
+            f"({difference_hours} hr) + {data.buffer_hours} hr = set the early Reminder for "
+            f"{hours_prior} hours prior."
+        ),
+    )
 
 
 async def copy_template_for_this_location(

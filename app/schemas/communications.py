@@ -35,7 +35,7 @@ class TemplateStepUpdate(BaseModel):
 
 
 class TemplateStepCreate(BaseModel):
-    kind: str = Field(pattern="^(email|sms)$")
+    kind: str = Field(pattern="^(email|sms|trigger)$")
     title: str = Field(min_length=1, max_length=200)
     body: str = ""
     subject: str = ""
@@ -64,6 +64,38 @@ class ManualReminderSendOut(BaseModel):
     channel: str
     body: str
     delivery_status: str
+
+
+class ReminderSendPreviewRequest(BaseModel):
+    appointment_at: datetime
+    timing_value: int = Field(ge=0, le=1000)
+    timing_unit: str = Field(pattern="^(hour|day|week|month)$")
+    channel: str = Field(default="sms", pattern="^(sms|email)$")
+
+
+class ReminderSendPreviewOut(BaseModel):
+    send_at: datetime
+    within_sending_hours: bool
+    blocked: bool
+    reason: str
+    sending_hours_start: time
+    sending_hours_end: time
+    # Reminders outside hours are not queued — they just do not go out.
+    queues_when_outside: bool = False
+
+
+class EarlyMorningOffsetRequest(BaseModel):
+    sending_hours_end: time
+    earliest_appointment: time
+    buffer_hours: int = Field(default=2, ge=0, le=24)
+
+
+class EarlyMorningOffsetOut(BaseModel):
+    hours_prior: int
+    difference_hours: int
+    buffer_hours: int
+    formula: str
+    explanation: str
 
 
 class CommunicationTemplateOut(BaseModel):

@@ -13,6 +13,8 @@ from app.database import get_db
 from app.schemas.communications import (
     CommunicationTemplateOut,
     CommunicationTemplateUpdate,
+    EarlyMorningOffsetOut,
+    EarlyMorningOffsetRequest,
     ManualReminderOptionOut,
     ManualReminderSendOut,
     ManualReminderSendRequest,
@@ -22,6 +24,8 @@ from app.schemas.communications import (
     OtherTemplateDedupeRequest,
     OutOfOfficeSettingsOut,
     OutOfOfficeSettingsUpdate,
+    ReminderSendPreviewOut,
+    ReminderSendPreviewRequest,
     SavedResponseCreate,
     SavedResponseOut,
     SavedResponseUpdate,
@@ -288,6 +292,32 @@ async def update_template_config(
 ):
     row = await svc.update_config(db, ctx, body)
     return TemplateConfigurationOut.model_validate(row)
+
+
+@router.post(
+    "/api/template-configurations/preview-reminder-send",
+    response_model=ReminderSendPreviewOut,
+)
+async def preview_reminder_send(
+    body: ReminderSendPreviewRequest,
+    db: AsyncSession = Depends(get_db),
+    ctx: StaffContext = Depends(get_staff_context),
+):
+    """Check whether a reminder would send or be blocked by sending hours."""
+    return await svc.preview_reminder_send(db, ctx, body)
+
+
+@router.post(
+    "/api/template-configurations/early-morning-offset",
+    response_model=EarlyMorningOffsetOut,
+)
+async def early_morning_offset(
+    body: EarlyMorningOffsetRequest,
+    ctx: StaffContext = Depends(get_staff_context),
+):
+    """Compute Option 3 early-morning Reminder hours-prior from send window math."""
+    _ = ctx
+    return svc.compute_early_morning_offset(body)
 
 
 @router.get("/api/message-grouping/rules")

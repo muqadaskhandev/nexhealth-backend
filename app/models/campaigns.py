@@ -55,6 +55,11 @@ class Campaign(Base):
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     recipient_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
+    # User starred this sent campaign (appears in Favorites tab alongside templates)
+    is_starred: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # Demo: appointments attributed to this campaign
+    appointments_booked: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
     created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
@@ -87,9 +92,16 @@ class CampaignSendLog(Base):
         UUID(as_uuid=True), ForeignKey("patients.id", ondelete="SET NULL"), nullable=True
     )
     patient_name: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    patient_email: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    patient_phone: Mapped[str] = mapped_column(String(40), nullable=False, default="")
     channel: Mapped[str] = mapped_column(String(20), nullable=False)
     status: Mapped[str] = mapped_column(String(30), nullable=False, default="sent")
     failure_reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    # Engagement (email opens/clicks; SMS responses; unsubscribes)
+    opened: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    clicked: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    unsubscribed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    responded: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     sent_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

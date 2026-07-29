@@ -43,6 +43,8 @@ class CampaignOut(BaseModel):
     scheduled_at: datetime | None = None
     sent_at: datetime | None = None
     recipient_count: int
+    is_starred: bool = False
+    appointments_booked: int = 0
     created_by_user_id: uuid.UUID | None = None
     created_by_name: str
     created_at: datetime
@@ -109,3 +111,41 @@ class CampaignSendTestRequest(BaseModel):
     channel: str = Field(pattern="^(email|sms)$")
     to_email: str | None = None
     to_phone: str | None = None
+
+
+class CampaignChannelAnalytics(BaseModel):
+    channel: str
+    sent: int
+    undelivered: int
+    unsubscribes: int
+    # Email-only
+    opens: int = 0
+    clicks: int = 0
+    # SMS-only
+    responses: int = 0
+    open_rate: float = 0.0
+    click_rate: float = 0.0
+    unsubscribe_rate: float = 0.0
+    undelivered_rate: float = 0.0
+    response_rate: float = 0.0
+
+
+class CampaignAnalyticsOut(BaseModel):
+    campaign_id: uuid.UUID
+    title: str
+    status: str
+    is_starred: bool
+    has_email: bool
+    has_sms: bool
+    email_subject: str
+    email_preview_text: str
+    email_body: str
+    sent_at: datetime | None = None
+    appointments_booked: int
+    channels: list[CampaignChannelAnalytics]
+    # Glossary for UI
+    glossary: dict[str, str]
+
+
+class CampaignStarUpdate(BaseModel):
+    is_starred: bool

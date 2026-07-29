@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import uuid
 from fastapi import APIRouter, Depends, Query, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.staff_context import StaffContext, get_staff_context
@@ -10,6 +11,7 @@ from app.database import get_db
 from app.schemas.campaigns import (
     CampaignAudiencePatient,
     CampaignAudiencePreviewOut,
+    CampaignAnalyticsOut,
     CampaignCopyRequest,
     CampaignCreateBlank,
     CampaignGenerateAiOut,
@@ -18,6 +20,7 @@ from app.schemas.campaigns import (
     CampaignOut,
     CampaignScheduleRequest,
     CampaignSendTestRequest,
+    CampaignStarUpdate,
     CampaignUpdate,
 )
 from app.services import campaigns_service as svc
@@ -81,6 +84,8 @@ def _campaign_out(row) -> CampaignOut:
         scheduled_at=row.scheduled_at,
         sent_at=row.sent_at,
         recipient_count=int(row.recipient_count or 0),
+        is_starred=bool(getattr(row, "is_starred", False)),
+        appointments_booked=int(getattr(row, "appointments_booked", 0) or 0),
         created_by_user_id=row.created_by_user_id,
         created_by_name=row.created_by_name or "",
         created_at=row.created_at,
@@ -224,3 +229,76 @@ async def send_test(
     ctx: StaffContext = Depends(get_staff_context),
 ):
     return await svc.send_test(db, ctx, campaign_id, body.channel)
+
+
+@router.get("/api/campaigns/{campaign_id}/analytics", response_model=CampaignAnalyticsOut)
+async def campaign_analytics(
+    campaign_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    ctx: StaffContext = Depends(get_staff_context),
+):
+    return await svc.get_campaign_analytics(db, ctx, campaign_id)
+
+
+@router.get("/api/campaigns/{campaign_id}/analytics.csv")
+async def campaign_analytics_csv(
+    campaign_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    ctx: StaffContext = Depends(get_staff_context),
+):
+    import csv
+    import io
+
+    campaign = await svc.get_campaign(db, ctx, campaign_id)
+    rows = await svc.list_campaign_analytics_rows(db, ctx, campaign_id)
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(
+        [
+            "patient_name",
+            "email",
+            "phone",
+            "channel",
+            "status",
+            "opened",
+            "clicked",
+            "unsubscribed",
+            "responded",
+            "failure_reason",
+            "sent_at",
+        ]
+    )
+    for r in rows:
+        writer.writerow(
+            [
+                r.patient_name,
+                r.patient_email,
+                r.patient_phone,
+                r.channel,
+                r.status,
+                "yes" if r.opened else "no",
+                "yes" if r.clicked else "no",
+                "yes" if r.unsubscribed else "no",
+                "yes" if r.responded else "no",
+                r.failure_reason,
+                r.sent_at.isoformat() if r.sent_at else "",
+            ]
+        )
+    buf.seek(0)
+    filename = f"campaign-{campaign.id}-analytics.csv"
+    return StreamingResponse(
+        iter([buf.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.post("/api/campaigns/{campaign_id}/star", response_model=CampaignOut)
+async def star_campaign(
+    campaign_id: uuid.UUID,
+    body: CampaignStarUpdate,
+    db: AsyncSession = Depends(get_db),
+    ctx: StaffContext = Depends(get_staff_context),
+):
+    row = await svc.set_campaign_starred(db, ctx, campaign_id, body.is_starred)
+    return _campaign_out(row)

@@ -9,6 +9,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.config import settings
 from app.core.staff_context import StaffContext
 from app.models.appointment_types import AppointmentTypeDef
 from app.models.communications import (
@@ -26,7 +27,7 @@ from app.models.communications import (
     TemplateStepKind,
 )
 from app.models.location import Location
-from app.models.staff import Appointment, Patient
+from app.models.staff import Appointment, AppointmentStatus, FormsStatus, Patient
 from app.schemas.communications import (
     CommunicationTemplateUpdate,
     EarlyMorningOffsetOut,
@@ -947,13 +948,17 @@ def _fill_reminder_tokens(
     patient: Patient,
     appointment: Appointment,
     location_name: str,
+    allow_patient_cancel: bool = False,
 ) -> str:
+    from app.services.reminder_responses import insert_confirm_appt_prompt
+
     appt_date = appointment.starts_at.strftime("%b %d, %Y")
     appt_time = appointment.starts_at.strftime("%I:%M %p").lstrip("0")
     details = (
         f"{patient.first_name} — {appt_date} at {appt_time} "
         f"({appointment.appointment_type})"
     )
+    insert_confirm_text = insert_confirm_appt_prompt(allow_cancel=allow_patient_cancel)
     replacements = {
         "{{PATIENT_FIRST_NAME}}": patient.first_name or "",
         "{{PATIENT_LAST_NAME}}": patient.last_name or "",
@@ -962,9 +967,13 @@ def _fill_reminder_tokens(
         "{{APPOINTMENT_TIME}}": appt_time,
         "{{APPOINTMENT_DETAILS}}": details,
         "{{APPOINTMENT_TYPE}}": appointment.appointment_type or "",
-        "{{INSERTCONFIRMAPPT}}": 'Reply "C" to confirm or "N" to cancel',
+        "{{INSERTCONFIRMAPPT}}": insert_confirm_text,
         "{{CONFIRM_APPOINTMENT}}": "[Confirm appointment]",
-        "{{APPOINTMENT_REGISTRATION}}": "[Confirm appointment & forms]",
+        "{{APPOINTMENT_REGISTRATION}}": (
+            f"{settings.frontend_url}/reminder/{appointment.id}"
+            if appointment.id
+            else "[Confirm appointment & forms]"
+        ),
         "{{PROVIDER_NAME}}": appointment.provider_name or "",
     }
     out = text or ""
@@ -1079,17 +1088,51 @@ async def send_manual_reminder(
 
     loc = await db.get(Location, ctx.location_id)
     location_name = loc.name if loc else ""
-    body = _fill_reminder_tokens(
-        step.body or step.subject or "",
-        patient=patient,
-        appointment=appointment,
-        location_name=location_name,
+    allow_cancel = False
+    if appointment.appointment_type_def_id:
+        at = await db.get(AppointmentTypeDef, appointment.appointment_type_def_id)
+        allow_cancel = bool(at and at.allow_patient_cancel)
+
+    from app.services.reminder_responses import subsequent_reminder_content_mode
+
+    send_cond = (step.meta or {}).get("send_condition") or _condition_key_from_label(step.condition_label)
+    send_to_confirmed = send_cond in ("confirmed", "either", None)
+    mode = subsequent_reminder_content_mode(
+        confirmed=appointment.status == AppointmentStatus.CONFIRMED,
+        forms_complete=appointment.forms_status == FormsStatus.COMPLETE,
+        send_to_confirmed=bool(send_to_confirmed),
     )
-    if step.kind == TemplateStepKind.EMAIL and step.subject:
-        subject = _fill_reminder_tokens(
-            step.subject, patient=patient, appointment=appointment, location_name=location_name
+    if mode == "skip":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Patient already confirmed and completed forms. Additional Reminders are skipped "
+                "unless the sequence is set to Send if confirmed or unconfirmed."
+            ),
         )
-        body = f"{subject}\n\n{body}" if body else subject
+
+    if mode == "forms_only":
+        body = (
+            f"Hi {patient.first_name}, thanks for confirming your appointment at {location_name}. "
+            "Please complete your remaining forms before your visit."
+        )
+    else:
+        body = _fill_reminder_tokens(
+            step.body or step.subject or "",
+            patient=patient,
+            appointment=appointment,
+            location_name=location_name,
+            allow_patient_cancel=allow_cancel,
+        )
+        if step.kind == TemplateStepKind.EMAIL and step.subject:
+            subject = _fill_reminder_tokens(
+                step.subject,
+                patient=patient,
+                appointment=appointment,
+                location_name=location_name,
+                allow_patient_cancel=allow_cancel,
+            )
+            body = f"{subject}\n\n{body}" if body else subject
 
     channel = "email" if step.kind == TemplateStepKind.EMAIL else "sms"
     if channel == "sms":

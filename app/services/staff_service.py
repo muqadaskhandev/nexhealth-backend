@@ -1384,7 +1384,9 @@ async def notify_automatic_forms_on_confirmation(
     )
     link = f"{settings.frontend_url}/forms/{raw_token}"
     names = ", ".join(t.name for t in templates)
-    body = f"Please fill out the following form(s): {names}\n{link}"
+    body = (
+        f"Thanks for confirming! Please fill out the following form(s): {names}\n{link}"
+    )
     await send_message(
         db, ctx, SendMessageRequest(patient_id=appointment.patient_id, body=body, channel="sms")
     )
@@ -1884,6 +1886,16 @@ async def receive_inbound_message(
     )
 
     await _maybe_send_ooo_reply(db, ctx, thread)
+
+    # Appointment Reminder confirm / cancel replies (Y/C/N keywords)
+    try:
+        from app.services import reminder_responses as rr
+
+        await rr.handle_reminder_sms_reply(db, ctx, patient_id, text)
+    except Exception:
+        # Reminder parsing must never break inbound delivery
+        pass
+
     return inbound
 
 

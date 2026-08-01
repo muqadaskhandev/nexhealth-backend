@@ -12,11 +12,15 @@ RUN pip install --upgrade pip && pip install -r requirements.txt
 
 COPY . .
 
+# Bust deploy cache when migration recovery changes (Render layer cache).
+RUN test -f alembic/versions/0048_review_responses.py \
+    && test -f scripts/run_migrations.py
+
 # Run as a non-root user.
 RUN useradd --create-home appuser && chown -R appuser /app
 USER appuser
 
 EXPOSE 8000
 
-# Apply pending migrations before serving (Render/production has no separate migrate step).
-CMD ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"]
+# Apply pending migrations before serving (handles unknown DB stamps from other branches).
+CMD ["sh", "-c", "python scripts/run_migrations.py && uvicorn app.main:app --host 0.0.0.0 --port 8000"]

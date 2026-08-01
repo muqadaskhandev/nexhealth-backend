@@ -230,8 +230,40 @@ async def process_message(
             "parsed_value": normalized,
             "validation_status": "valid",
         }
+    elif field_validation_service.should_skip_llm(current):
+        # Strict local validation — do not spend LLM tokens on typed fields / junk text.
+        if agent_llm_service.detect_emergency(message):
+            session.status = AgentSessionStatus.EMERGENCY_STOPPED
+            agent_msg = (
+                "If this is a medical emergency, please call 911 or go to the nearest emergency room. "
+                "I've paused this intake — contact your clinic when you're safe."
+            )
+            await _add_turn(db, session.id, AgentTurnRole.AGENT, agent_msg)
+            await _log_audit(db, session.id, "emergency_stop", {"field_id": current.get("id")})
+            await db.flush()
+            return _session_state(
+                session,
+                tpl,
+                {"assistant_message": agent_msg, "done": False, "validation_status": "emergency"},
+            )
+
+        ok, err, normalized = field_validation_service.validate_field_value(current, message)
+        if not ok:
+            agent_msg = err or "That answer isn't valid for this question. Please try again."
+            await _add_turn(db, session.id, AgentTurnRole.AGENT, agent_msg, current.get("id"))
+            await db.flush()
+            return _session_state(
+                session,
+                tpl,
+                {"assistant_message": agent_msg, "done": False, "validation_status": "invalid"},
+            )
+        llm_result = {
+            "assistant_message": "Thanks — got it.",
+            "parsed_value": normalized,
+            "validation_status": "valid",
+        }
     else:
-        # Build conversation snippet for LLM (roles mapped to openai format)
+        # Free-form fields only: LLM may help, then we re-validate strictly.
         turn_rows = await list_turns(db, session.id)
         snippet = [{"role": "assistant" if t["role"] == "agent" else t["role"], "content": t["content"]} for t in turn_rows[-10:]]
 
@@ -247,6 +279,20 @@ async def process_message(
             patient_message=message,
             conversation_snippet=snippet,
         )
+        if llm_result.get("validation_status") == "valid" and llm_result.get("parsed_value") is not None:
+            ok, err, normalized = field_validation_service.validate_field_value(
+                current, message, llm_result.get("parsed_value")
+            )
+            if not ok:
+                agent_msg = err or "That answer isn't valid for this question. Please try again."
+                await _add_turn(db, session.id, AgentTurnRole.AGENT, agent_msg, current.get("id"))
+                await db.flush()
+                return _session_state(
+                    session,
+                    tpl,
+                    {"assistant_message": agent_msg, "done": False, "validation_status": "invalid"},
+                )
+            llm_result["parsed_value"] = normalized
 
     validation_status = llm_result.get("validation_status", "needs_clarification")
 

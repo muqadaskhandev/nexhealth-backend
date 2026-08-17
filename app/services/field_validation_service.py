@@ -228,6 +228,34 @@ def _is_junk(value: str, *, allow_short: bool = False) -> bool:
     return False
 
 
+# Common English / given-name letter pairs. Keyboard mash almost never uses these.
+_NAME_LIKE_BIGRAMS = frozenset(
+    "th he an in er re on at en nd st es or te ed is it al ar nt ng se ha as ou "
+    "le ve co me de hi ri ro ic ne ea ra ce li ch el la ll be ma na sh ti ca pa "
+    "sa da ta mi ki ja jo ka ke ko lu ly ny ph qu sc sk sm sn sp sw tw wh ye yo "
+    "br cr dr fr gr pr tr cl fl gl pl sl bl kn ck gh mb mp nk ld lt rd rk rm rn "
+    "rs rt wn ia ie io ou ay ey oy oo ee ah eh oh ul um un ur us ut wa we wi wo "
+    "ya ye za ze zo ad af ag ai ak am ao ap aq au av aw ax az ba bi bo bu by "
+    "di do du em eu fa fe fi fo fu ga ge gi go gu ho hu hy id if ig il im ip ir "
+    "je ji ju lo ni no nu oc od of og oh ok ol om op os ot ov ox oz pe pi po pu "
+    "qa qi ra ru si so su to tu va vi vo vu xi za zu "
+    "mu uq qa ad da as ng uy".split()
+)
+
+
+def _name_bigrams_look_real(part: str) -> bool:
+    compact = re.sub(r"[^a-z]", "", part.lower())
+    if len(compact) < 5:
+        return True
+    pairs = [compact[i : i + 2] for i in range(len(compact) - 1)]
+    hits = sum(1 for p in pairs if p in _NAME_LIKE_BIGRAMS)
+    ratio = hits / max(len(pairs), 1)
+    # Long mash like "fkyitkfyt" can accidentally include "yi"+"it"; require more overlap.
+    if len(compact) >= 7:
+        return hits >= 3 and ratio >= 0.35
+    return hits >= 2 or ratio >= 0.4
+
+
 def _name_looks_implausible(value: str) -> bool:
     """Catch keyboard mash / gibberish that still matches [A-Za-z]."""
     parts = [p for p in re.split(r"[\s'\-]+", value) if p]
@@ -248,6 +276,8 @@ def _name_looks_implausible(value: str) -> bool:
                 run += 1
                 if run >= 5:
                     return True
+        if not _name_bigrams_look_real(part):
+            return True
     return False
 
 

@@ -29,6 +29,7 @@ class PatientOut(BaseModel):
     archived: bool
     insurance_data: dict[str, Any]
     notification_prefs: dict[str, Any]
+    chart: dict[str, Any] = Field(default_factory=dict)
     initials: str = ""
     full_name: str = ""
 
@@ -107,6 +108,8 @@ class AppointmentOut(BaseModel):
     patient_dob: str | None = None
     patient_email: str = ""
     patient_phone: str = ""
+    visit_reason: str | None = None
+    visit_notes: str | None = None
 
 
 class AppointmentCreate(BaseModel):

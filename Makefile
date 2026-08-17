@@ -3,8 +3,8 @@
 install:
 	python -m venv .venv && . .venv/bin/activate && pip install -r requirements.txt
 
-dev:            ## run the API locally (expects Postgres on :5432 and a .env)
-	uvicorn app.main:app --reload --port 8000
+dev:            ## run the API locally (Postgres on :5434; 8000 is often taken)
+	uvicorn app.main:app --reload --port 8001
 
 migrate:        ## apply migrations
 	alembic upgrade head
@@ -16,7 +16,7 @@ seed:           ## load demo locations + users
 	python -m seed
 
 up:             ## full local stack (Postgres + API) via Docker
-	docker-compose up --build
+	docker-compose up --build -d
 
 down:
 	docker-compose down

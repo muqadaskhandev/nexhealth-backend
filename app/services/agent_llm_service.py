@@ -33,14 +33,27 @@ HARD RULES (never break these):
 8. Keep replies short, friendly, and plain language.
 9. Return ONLY valid JSON matching the schema — no markdown.
 10. Introduce yourself as {assistant_name} when greeting; otherwise stay focused on intake.
+11. Do not mention field ids, catalog ids, or internal hashes in what the patient sees.
+
+ANSWER VALIDATION (you must do this yourself every turn — do not accept an answer just because it has letters):
+- Judge the patient's message against THIS field's type, label, and options.
+- Accept only values a real patient would reasonably give for that field.
+- Reject keyboard mash, random letter strings, placeholders (test, asdf, foo, xxx), fake/gibberish text, and punctuation nonsense.
+- Names (first, last, full, signature): must look like a real human name (e.g. Jane, Mary Alice, O'Brien, Aqsa). Strings like "ruyelryrale" or "fhkhkfhwolffhworfro" are invalid.
+- Date of birth: must be a real calendar date in the past (not today, not the future, not older than 120 years). Example: 03/15/1990.
+- Insurance: must look like a real carrier, plan, or "none"/"self-pay". Strings like "hjhlu e;" are invalid.
+- Address: must look like a real street address (street + city or similar), not mash.
+- Notes/textarea: must be readable English (or the patient's language), not mash. Empty is OK only if the field is optional.
+- Language: a real language name (English, Spanish, etc.).
+- If options are listed, the answer must match one (or an obvious synonym like y → Yes).
+- If invalid: validation_status must be "invalid", parsed_value must be null, and assistant_message must politely ask them to try again and say what you need. Stay on this field.
+- If valid: validation_status "valid" and parsed_value is the cleaned value only (no commentary).
+- If unclear: validation_status "needs_clarification" and ask a short follow-up. parsed_value null.
 
 Your job each turn:
-- Ask the current field question naturally (use field label and type).
-- Parse the patient's message into parsed_value for the current field.
-- If the answer is unclear or incomplete, set validation_status to "needs_clarification".
-- If valid, set validation_status to "valid".
-- If invalid format, set validation_status to "invalid".
-- If patient goes off-topic medically, set validation_status to "off_topic".
+- Ask or confirm the current field naturally (use field label and type).
+- Validate the patient's message for that field only.
+- If they go off-topic medically, set validation_status to "off_topic".
 """
 
 RESPONSE_SCHEMA = {
@@ -141,6 +154,14 @@ async def _llm_turn(
     from app.services.field_validation_service import validate_field_value
 
     name = assistant_name()
+    field_for_model = {
+        "id": current_field.get("id"),
+        "label": current_field.get("label"),
+        "type": current_field.get("type"),
+        "required": bool(current_field.get("required")),
+        "options": current_field.get("options") or [],
+        "placeholder": current_field.get("placeholder") or "",
+    }
     field_summary = [
         {
             "id": f.get("id"),
@@ -154,9 +175,10 @@ async def _llm_turn(
 
     system = (
         HARD_RULES.format(assistant_name=name)
-        + f"\n\nPractice: {practice_name}\nPatient first name: {patient_name.split()[0] if patient_name else 'there'}"
-        + f"\n\nCurrent field: {json.dumps(current_field, default=str)}"
-        + f"\n\nAllowed fields: {json.dumps(field_summary, default=str)}"
+        + f"\n\nPractice: {practice_name}"
+        + f"\nPatient first name (for greeting only): {patient_name.split()[0] if patient_name else 'there'}"
+        + f"\n\nValidate this field now: {json.dumps(field_for_model, default=str)}"
+        + f"\n\nAllowed fields (ids only for progress, do not ask them yet): {json.dumps(field_summary, default=str)}"
         + f"\n\nAlready answered field ids: {list(draft_answers.keys())}"
         + f"\n\nResponse JSON schema: {json.dumps(RESPONSE_SCHEMA)}"
     )
@@ -169,20 +191,42 @@ async def _llm_turn(
         if role not in ("user", "assistant", "system"):
             role = "user"
         messages.append({"role": role, "content": turn["content"]})
-    messages.append({"role": "user", "content": patient_message})
+    messages.append(
+        {
+            "role": "user",
+            "content": (
+                f"Current field: {field_for_model['label']} (type={field_for_model['type']}).\n"
+                f"Patient answer:\n{patient_message}"
+            ),
+        }
+    )
 
     content = await _call_chat_completions(messages)
     parsed = _parse_json_content(content)
+    status = str(parsed.get("validation_status") or "").lower()
 
-    # Backend re-validates — never trust LLM alone
+    # Model is the semantic judge. Local checks only enforce format (and cannot mark mash as valid).
+    if status in {"invalid", "needs_clarification", "off_topic", "emergency"}:
+        parsed["parsed_value"] = None
+        parsed["done"] = False
+        if not (parsed.get("assistant_message") or "").strip():
+            parsed["assistant_message"] = (
+                f"That doesn’t look like a valid {field_for_model['label'].lower()}. Please try again."
+            )
+        parsed.setdefault("field_id", current_field.get("id"))
+        return parsed
+
     ok, err, normalized = validate_field_value(current_field, patient_message, parsed.get("parsed_value"))
     if ok and normalized is not None and normalized != "":
         parsed["parsed_value"] = normalized
         parsed["validation_status"] = "valid"
-    elif parsed.get("validation_status") == "valid":
-        parsed["validation_status"] = "needs_clarification"
-        if err:
-            parsed["assistant_message"] = err
+    else:
+        parsed["validation_status"] = "invalid"
+        parsed["parsed_value"] = None
+        parsed["done"] = False
+        parsed["assistant_message"] = err or parsed.get("assistant_message") or (
+            f"Please enter a valid {field_for_model['label'].lower()}."
+        )
 
     parsed.setdefault("field_id", current_field.get("id"))
     parsed.setdefault("done", False)
@@ -300,11 +344,17 @@ def _scripted_turn(
     }
 
 
-def opening_message(patient_name: str, practice_name: str, first_field: dict) -> str:
+def opening_message(
+    patient_name: str,
+    practice_name: str,
+    first_field: dict,
+    visit_summary: str | None = None,
+) -> str:
     first = patient_name.split()[0] if patient_name else "there"
     name = assistant_name()
+    visit_line = f" This is for your {visit_summary}." if visit_summary else ""
     return (
-        f"Hi {first}, I'm {name} — here to help you complete your intake for {practice_name}. "
+        f"Hi {first}, I'm {name} — here to help you complete your intake for {practice_name}.{visit_line} "
         f"It should only take a few minutes.\n\n{question_for_field(first_field)}"
     )
 
@@ -318,11 +368,20 @@ def question_for_field(field: dict) -> str:
     if ftype == "select_boxes" and options:
         return f"{label}\n\nYou can choose: {', '.join(options)}"
     if ftype in ("date", "date_entry"):
-        return f"{label}\n\nPlease use MM/DD/YYYY format."
+        blob = f"{field.get('id') or ''} {label}".lower()
+        dob_hint = "birth" in blob or bool(re.search(r"\bdob\b", blob))
+        extra = " Choose a past date of birth — today and future dates are not allowed." if dob_hint else ""
+        return f"{label}\n\nUse the date picker below.{extra}"
     if ftype == "email":
         return f"What is your email address? ({label})"
     if ftype == "phone":
         return f"What is your phone number? ({label})"
+    if ftype == "file":
+        return f"{label}\n\nPlease attach a file using the button below (PDF, photo, or document)."
+    if ftype == "payment":
+        return f"{label}\n\nYou can pay at the office — tap below to confirm."
+    if ftype == "signature":
+        return f"{label}\n\nType your full name to sign."
     if ftype == "checkbox":
         return f"{label} (yes or no)"
     placeholder = field.get("placeholder")

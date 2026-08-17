@@ -26,7 +26,8 @@ services:
       # Override host so the container reaches the db service, not localhost.
       DATABASE_URL: postgresql+asyncpg://nexhealth:nexhealth@db:5432/nexhealth
     ports:
-      - "8000:8000"
+      # Host 8000 is often taken locally (e.g. another Compose stack); use 8001.
+      - "8001:8000"
     depends_on:
       db:
         condition: service_healthy

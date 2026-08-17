@@ -264,6 +264,9 @@ class FormRequest(Base):
     form_access_token_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("form_access_tokens.id", ondelete="SET NULL"), nullable=True, index=True
     )
+    appointment_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("appointments.id", ondelete="SET NULL"), nullable=True, index=True
+    )
 
 
 class FormSubmission(Base):

@@ -253,8 +253,16 @@ async def submit_form(
     await db.flush()
 
     if tpl and answers:
-        from app.services.sync_target_service import apply_sync_targets
-        apply_sync_targets(patient, tpl.fields or [], answers)
+        from app.services.form_completion_service import resolve_visit
+        from app.services.sync_target_service import apply_intake_sync
+
+        appt = await resolve_visit(
+            db,
+            patient_id=patient.id,
+            location_id=req.location_id,
+            form_request_id=req.id,
+        )
+        apply_intake_sync(patient, tpl.fields or [], answers, appointment=appt)
 
     await apply_sync_outcome(db, req, patient)
 
@@ -283,6 +291,7 @@ async def submit_form(
         patient_id=patient.id,
         location_id=req.location_id,
         remaining_pending_forms=remaining,
+        appointment_id=req.appointment_id,
     )
 
     return remaining

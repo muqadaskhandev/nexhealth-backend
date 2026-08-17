@@ -160,7 +160,21 @@ async def bootstrap_opening(
             session.current_field_id = current.get("id")
 
     patient_name = f"{patient.first_name} {patient.last_name}".strip()
-    msg = agent_llm_service.opening_message(patient_name, practice_name, current or {"label": "Let's begin"})
+    visit_summary = None
+    from app.services.form_completion_service import resolve_visit
+
+    appt = await resolve_visit(
+        db,
+        patient_id=patient.id,
+        location_id=session.location_id,
+        form_request_id=session.form_request_id,
+    )
+    if appt is not None:
+        when = appt.starts_at.strftime("%A, %B %d, %Y at %I:%M %p").replace(" 0", " ")
+        visit_summary = f"{appt.appointment_type} with {appt.provider_name} on {when}"
+    msg = agent_llm_service.opening_message(
+        patient_name, practice_name, current or {"label": "Let's begin"}, visit_summary=visit_summary
+    )
     await _add_turn(db, session.id, AgentTurnRole.AGENT, msg, current.get("id") if current else None)
     await db.flush()
     return msg
@@ -190,7 +204,7 @@ async def process_message(
     if current is None:
         current = field_validation_service.next_unanswered_field(fields, draft)
         if current is None:
-            return {"assistant_message": "All questions are answered. Tap Submit to finish.", "done": True, "validation_status": "valid"}
+            return {"assistant_message": "All questions are answered. Please review your answers and tap Submit to finish.", "done": True, "validation_status": "valid"}
         session.current_field_id = current.get("id")
 
     await _add_turn(db, session.id, AgentTurnRole.PATIENT, message, current.get("id"))
@@ -204,7 +218,7 @@ async def process_message(
         agent_msg = "No problem — we'll skip that one."
         if nxt is None:
             session.current_field_id = None
-            agent_msg += " Please tap Submit to finish."
+            agent_msg += " Please review your answers and tap Submit to finish."
             llm_result = {"assistant_message": agent_msg, "done": True, "validation_status": "valid"}
         else:
             session.current_field_id = nxt.get("id")
@@ -344,18 +358,18 @@ async def process_message(
             ans_row.ai_generated = agent_llm_service.openai_configured()
 
         nxt = field_validation_service.next_unanswered_field(fields, draft)
+        nxt_q = agent_llm_service.question_for_field(nxt) if nxt else None
+        thanks = (llm_result.get("assistant_message") or "Thanks — got it.").strip()
         if nxt is None:
             session.current_field_id = None
-            agent_msg = llm_result.get(
-                "assistant_message",
-                "Thank you! I have everything I need. Please tap Submit to finish.",
-            )
+            agent_msg = "Thank you! I have everything I need. Please review your answers and tap Submit to finish."
             llm_result["done"] = True
         else:
             session.current_field_id = nxt.get("id")
-            agent_msg = llm_result.get("assistant_message") or agent_llm_service.question_for_field(nxt)
-            if structured_value is not None and not llm_result.get("assistant_message"):
-                agent_msg = agent_llm_service.question_for_field(nxt)
+            if structured_value is not None or field_validation_service.should_skip_llm(current):
+                agent_msg = f"{thanks} {nxt_q}".strip()
+            else:
+                agent_msg = llm_result.get("assistant_message") or nxt_q
             llm_result["done"] = False
 
         await _add_turn(db, session.id, AgentTurnRole.AGENT, agent_msg, nxt.get("id") if nxt else None)

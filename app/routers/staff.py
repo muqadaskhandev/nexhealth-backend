@@ -59,6 +59,8 @@ router = APIRouter(tags=["staff"])
 
 
 def _patient_out(p) -> PatientOut:
+    from app.services.sync_target_service import patient_chart_snapshot
+
     out = PatientOut.model_validate(p)
     fi = p.first_name[:1].upper() if p.first_name else ""
     li = p.last_name[:1].upper() if p.last_name else ""
@@ -66,6 +68,7 @@ def _patient_out(p) -> PatientOut:
         update={
             "initials": (fi + li) or "??",
             "full_name": f"{p.first_name} {p.last_name}".strip(),
+            "chart": patient_chart_snapshot(p),
         }
     )
 
@@ -93,6 +96,8 @@ def _appt_out(appt, patient) -> AppointmentOut:
         patient_dob=patient.dob.isoformat() if patient.dob else None,
         patient_email=patient.email,
         patient_phone=patient.phone,
+        visit_reason=(appt.meta or {}).get("visit_reason") or None,
+        visit_notes=(appt.meta or {}).get("visit_notes") or None,
     )
 
 

@@ -52,6 +52,14 @@ class PublicFormOut(BaseModel):
     prefill_answers: dict[str, Any] = Field(default_factory=dict)
 
 
+class PublicAppointmentOut(BaseModel):
+    id: uuid.UUID
+    starts_at: datetime
+    provider_name: str
+    appointment_type: str
+    forms_status: str
+
+
 class PublicVerifyOut(BaseModel):
     patient_name: str
     practice_name: str
@@ -60,6 +68,7 @@ class PublicVerifyOut(BaseModel):
     location_address: str
     location_phone: str
     forms: list[PublicFormOut]
+    upcoming_appointment: PublicAppointmentOut | None = None
 
 
 class PublicSubmitRequest(BaseModel):

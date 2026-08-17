@@ -76,7 +76,7 @@ async def seed() -> None:
         result = await db.execute(select(Practice).where(Practice.name == "Better Dental"))
         practice = result.scalar_one_or_none()
         if practice is None:
-            practice, created_locs = await practice_service.create_practice(
+            practice, main_loc = await practice_service.create_practice(
                 db,
                 name="Better Dental",
                 address="445 Bush St.",
@@ -87,7 +87,6 @@ async def seed() -> None:
                 subscription_plan=SubscriptionPlan.PROFESSIONAL,
                 default_location_name="Better Dental - San Francisco",
             )
-            main_loc = created_locs[0]
             main_loc.address = LOCATIONS[0][1]
             for name, addr in LOCATIONS[1:]:
                 await practice_service.create_location_for_practice(
@@ -99,6 +98,11 @@ async def seed() -> None:
 
         locations = await practice_service.list_practice_locations(db, practice.id)
         all_ids = [loc.id for loc in locations]
+        from app.services import staff_service
+
+        for loc in locations:
+            await staff_service.seed_starter_form_templates(db, practice.id, loc.id)
+            print(f"[seed] starter forms ready for {loc.name}")
 
         admin = await user_service.get_user_by_email(db, settings.seed_admin_email)
         if admin is None:

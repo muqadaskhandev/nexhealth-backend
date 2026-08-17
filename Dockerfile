@@ -14,6 +14,7 @@ COPY . .
 
 # Bust deploy cache when migration recovery changes (Render layer cache).
 RUN test -f alembic/versions/0048_review_responses.py \
+    && test -f alembic/versions/0049_form_request_appointment.py \
     && test -f scripts/run_migrations.py
 
 # Run as a non-root user.

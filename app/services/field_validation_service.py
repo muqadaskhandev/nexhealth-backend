@@ -9,7 +9,7 @@ LAYOUT_TYPES = frozenset({"content", "location_logo", "columns", "panel"})
 MEDICAL_ALERTS_TYPES = frozenset({"medical_alerts_dropdown", "medical_alerts_radio"})
 SKIP_TYPES = LAYOUT_TYPES
 
-# Field types that must be validated locally (no LLM) so junk text never burns tokens.
+# Format-only types stay local (dates, emails, chips). Semantic types go to the model.
 STRICT_LOCAL_TYPES = frozenset(
     {
         "email",
@@ -21,11 +21,8 @@ STRICT_LOCAL_TYPES = frozenset(
         "dropdown",
         "radio",
         "select_boxes",
-        "text",
-        "address",
-        "preferred_language",
-        "insurance",
-        "signature",
+        "file",
+        "payment",
     }
 )
 
@@ -77,7 +74,9 @@ JUNK_VALUES = frozenset(
     }
 )
 NAME_SYNC_TARGETS = frozenset({"patient.first_name", "patient.last_name"})
-NAME_LABEL_HINTS = ("name", "first name", "last name", "surname", "given name", "full name")
+NAME_LABEL_HINTS = ("first name", "last name", "surname", "given name", "full name", "middle name")
+DOB_SYNC_TARGETS = frozenset({"patient.date_of_birth", "patient.dob"})
+MAX_DOB_AGE_YEARS = 120
 
 
 def field_is_visible(field: dict, answers: dict[str, Any]) -> bool:
@@ -133,7 +132,10 @@ def _has_value(field: dict, value: Any) -> bool:
         return False
     ftype = field.get("type", "text")
     if ftype == "checkbox":
-        return value is True
+        return isinstance(value, bool)
+    if ftype == "medical_alerts_dropdown":
+        # Tag picker: omitted catalog items mean "no"; an object is enough.
+        return isinstance(value, dict)
     if ftype in MEDICAL_ALERTS_TYPES:
         if not isinstance(value, dict):
             return False
@@ -171,40 +173,124 @@ def is_name_field(field: dict) -> bool:
     if target in NAME_SYNC_TARGETS:
         return True
     label = (field.get("label") or "").strip().lower()
+    fid = (field.get("id") or "").strip().lower()
+    if "birth" in label or fid in ("dob", "date_of_birth"):
+        return False
     return any(h in label for h in NAME_LABEL_HINTS)
 
 
+def is_dob_field(field: dict) -> bool:
+    target = (field.get("sync_target") or "").strip()
+    if target in DOB_SYNC_TARGETS:
+        return True
+    blob = f"{field.get('id') or ''} {field.get('label') or ''}".lower()
+    return "birth" in blob or re.search(r"\bdob\b", blob) is not None
+
+
+def _dob_error(parsed: date) -> str | None:
+    today = date.today()
+    if parsed >= today:
+        return "Date of birth cannot be today or in the future. Please pick a past date (for example, 03/15/1990)."
+    try:
+        oldest = today.replace(year=today.year - MAX_DOB_AGE_YEARS)
+    except ValueError:
+        oldest = today.replace(month=2, day=28, year=today.year - MAX_DOB_AGE_YEARS)
+    if parsed < oldest:
+        return "That doesn't look like a real date of birth. Please enter a realistic past date."
+    return None
+
+
 def should_skip_llm(field: dict) -> bool:
-    """Return True when this field can be validated locally without calling the model."""
+    """True when format can be checked locally (picker / email / date). Semantic text goes to the model."""
     ftype = field.get("type", "text")
     if ftype in MEDICAL_ALERTS_TYPES:
         return True
-    if ftype == "textarea":
-        return False
     return ftype in STRICT_LOCAL_TYPES
 
 
-def _is_junk(value: str) -> bool:
+_VOWELS = set("aeiouyAEIOUY")
+_KEYBOARD_MASH = re.compile(
+    r"asdf+|qwer+|zxcv+|hjkl+|qazwsx|wsxedc|1234+|abcd+|fghj+|uiop+",
+    re.I,
+)
+
+
+def _is_junk(value: str, *, allow_short: bool = False) -> bool:
     cleaned = re.sub(r"\s+", " ", value.strip().lower())
     if cleaned in JUNK_VALUES:
         return True
     if re.fullmatch(r"(.)\1{2,}", cleaned):
         return True
-    if re.fullmatch(r"[a-z]{1,2}", cleaned):
+    if not allow_short and re.fullmatch(r"[a-z]{1,2}", cleaned):
+        return True
+    if _KEYBOARD_MASH.search(re.sub(r"[\s'\-]", "", cleaned)):
         return True
     return False
 
 
+def _name_looks_implausible(value: str) -> bool:
+    """Catch keyboard mash / gibberish that still matches [A-Za-z]."""
+    parts = [p for p in re.split(r"[\s'\-]+", value) if p]
+    if not parts or len(parts) > 5:
+        return True
+    for part in parts:
+        if len(part) == 1:
+            continue
+        if len(part) > 16:
+            return True
+        if len(part) >= 3 and not any(ch in _VOWELS for ch in part):
+            return True
+        run = 0
+        for ch in part:
+            if ch in _VOWELS:
+                run = 0
+            elif ch.isalpha():
+                run += 1
+                if run >= 5:
+                    return True
+    return False
+
+
+def _looks_like_gibberish(value: str, *, allow_acronyms: bool = True) -> bool:
+    """Reject mashed keys for any free-text field without sending the answer to the LLM."""
+    raw = re.sub(r"\s+", " ", str(value).strip())
+    if not raw:
+        return False
+    if _is_junk(raw, allow_short=True):
+        return True
+    words = re.findall(r"[A-Za-z]+", raw)
+    if not words:
+        return False
+    for word in words:
+        if allow_acronyms and word.isupper() and 2 <= len(word) <= 6:
+            continue
+        if _name_looks_implausible(word):
+            return True
+    return False
+
+
+def _please_retry(label: str, hint: str | None = None) -> str:
+    pretty = (label or "this question").strip() or "this question"
+    if hint:
+        return f"That doesn’t look like a valid answer for {pretty}. {hint}"
+    return f"That doesn’t look like a valid answer for {pretty}. Please enter real information."
+
+
 def _validate_name(label: str, value: str) -> tuple[bool, str | None, Any]:
     val = re.sub(r"\s+", " ", value.strip())
-    if _is_junk(val):
-        return False, f"Please enter a real {label.lower()} — placeholders like “name” or “test” are not accepted.", None
+    pretty = label.lower() if label.lower() not in {"name", "this question"} else "name"
+    retry = (
+        f"That doesn’t look like a real {pretty}. "
+        f"Please enter a valid {pretty} using letters only (for example, Jane or Mary Alice)."
+    )
+    if _is_junk(val, allow_short=True) or _name_looks_implausible(val):
+        return False, retry, None
     if any(ch.isdigit() for ch in val):
-        return False, f"Please enter a valid {label.lower()} without numbers.", None
+        return False, f"Please enter a valid {pretty} without numbers.", None
     if not NAME_RE.match(val):
-        return False, f"Please enter a valid {label.lower()} using letters only.", None
+        return False, f"Please enter a valid {pretty} using letters only.", None
     if len(val) < 2:
-        return False, f"Please enter a valid {label.lower()}.", None
+        return False, f"Please enter a valid {pretty}.", None
     return True, None, val.title() if val.islower() or val.isupper() else val
 
 
@@ -230,17 +316,26 @@ def validate_field_value(field: dict, raw_text: str, parsed_hint: Any = None) ->
 
     if ftype == "email":
         val = str(candidate).strip().lower()
-        if _is_junk(val) or " " in val or not EMAIL_RE.match(val):
-            return False, "Please enter a valid email address (example: name@email.com).", None
+        local = val.split("@", 1)[0] if "@" in val else val
+        if (
+            _is_junk(val)
+            or _is_junk(local, allow_short=True)
+            or _looks_like_gibberish(local)
+            or " " in val
+            or not EMAIL_RE.match(val)
+        ):
+            return False, "Please enter a valid email address (example: jane@email.com).", None
         return True, None, val
 
     if ftype == "phone":
         val = str(candidate).strip()
+        digits = _phone_digits(val)
         if _is_junk(val) or not PHONE_DIGITS_RE.match(val):
             return False, "Please enter a valid phone number using digits only.", None
-        digits = _phone_digits(val)
         if len(digits) < 7 or len(digits) > 15:
             return False, "Please enter a valid phone number (7–15 digits).", None
+        if re.fullmatch(r"(\d)\1{6,}", digits):
+            return False, "Please enter a real phone number — repeating digits are not accepted.", None
         return True, None, val
 
     if ftype == "number":
@@ -255,19 +350,18 @@ def validate_field_value(field: dict, raw_text: str, parsed_hint: Any = None) ->
 
     if ftype in ("date", "date_entry"):
         if isinstance(candidate, date):
-            return True, None, candidate.isoformat()
-        raw = str(candidate).strip()
-        if _is_junk(raw) or re.fullmatch(r"[A-Za-z\s]+", raw):
-            return False, f"Please enter a valid date for {label} (e.g. MM/DD/YYYY).", None
-        parsed = _parse_date(raw)
-        if parsed is None:
-            return False, f"Please enter a valid date for {label} (e.g. MM/DD/YYYY).", None
-        # DOB-like fields cannot be in the future
-        if is_name_field(field) is False and ("birth" in label.lower() or "dob" in label.lower() or field.get("sync_target") == "patient.date_of_birth"):
-            if parsed > date.today():
-                return False, "Date of birth cannot be in the future.", None
-            if parsed.year < 1900:
-                return False, "Please enter a realistic date of birth.", None
+            parsed = candidate
+        else:
+            raw = str(candidate).strip()
+            if _is_junk(raw) or re.fullmatch(r"[A-Za-z\s]+", raw):
+                return False, f"Please enter a valid date for {label} (e.g. MM/DD/YYYY).", None
+            parsed = _parse_date(raw)
+            if parsed is None:
+                return False, f"Please enter a valid date for {label} (e.g. MM/DD/YYYY).", None
+        if is_dob_field(field):
+            dob_err = _dob_error(parsed)
+            if dob_err:
+                return False, dob_err, None
         return True, None, parsed.isoformat()
 
     if ftype == "checkbox":
@@ -288,8 +382,8 @@ def validate_field_value(field: dict, raw_text: str, parsed_hint: Any = None) ->
             if match:
                 return True, None, match
             return False, f"Please choose one of: {', '.join(options)}.", None
-        if not options and not val:
-            return False, f"Please provide an answer for {label}.", None
+        if not val or _looks_like_gibberish(val):
+            return False, f"Please choose a valid option for {label}." if not options else f"Please choose one of: {', '.join(options)}.", None
         return True, None, val
 
     if ftype == "select_boxes":
@@ -317,29 +411,65 @@ def validate_field_value(field: dict, raw_text: str, parsed_hint: Any = None) ->
             for _rid, ans in responses.items():
                 if ans not in ("yes", "no"):
                     return False, "Please answer Yes or No for each medical history item.", None
+            for item in block.get("writeIns") or []:
+                w = str(item).strip()
+                if w and (_is_junk(w, allow_short=True) or _looks_like_gibberish(w)):
+                    return False, "Please enter a real condition, allergy, or medication name.", None
         return True, None, candidate
 
     if ftype == "preferred_language":
         val = re.sub(r"\s+", " ", str(candidate).strip())
-        if _is_junk(val) or not LANGUAGE_RE.match(val):
+        if _is_junk(val) or _looks_like_gibberish(val) or not LANGUAGE_RE.match(val):
             return False, "Please enter a valid language (letters only), e.g. English.", None
         return True, None, val.title()
 
-    if ftype in ("text", "textarea", "address", "insurance", "signature"):
+    if ftype == "signature":
+        val = re.sub(r"\s+", " ", str(candidate).strip())
+        if not val:
+            if field.get("required"):
+                return False, "Please type your full name to sign.", None
+            return True, None, ""
+        return _validate_name("name", val)
+
+    if ftype == "file":
+        val = str(candidate).strip()
+        if not val:
+            if field.get("required"):
+                return False, "Please attach a file using the upload button.", None
+            return True, None, ""
+        if _is_junk(val):
+            return False, "Please attach a PDF, photo, or document.", None
+        if not (val.startswith("/uploads/") or val.startswith("http://") or val.startswith("https://")):
+            return False, "Please attach a PDF, photo, or document using the upload button.", None
+        return True, None, val
+
+    if ftype == "payment":
+        val = str(candidate).strip().lower().replace("-", "_").replace(" ", "_")
+        if val in ("pay_at_office", "paid", "pay_at_the_office", "office"):
+            return True, None, "pay_at_office"
+        if not field.get("required") and not val:
+            return True, None, ""
+        return False, "Tap the button below if you'll pay at the office.", None
+
+    if ftype in ("text", "textarea", "address", "insurance"):
         val = re.sub(r"\s+", " ", str(candidate).strip())
         if not val:
             if field.get("required"):
                 return False, f"Please provide an answer for {label}.", None
             return True, None, ""
-        if _is_junk(val):
-            return False, f"Please enter a real answer for {label} — placeholders are not accepted.", None
-        if is_name_field(field) or ftype == "text" and ("name" in label.lower()):
+        if is_name_field(field) or (ftype == "text" and "name" in label.lower()):
             return _validate_name(label, val)
+        if _is_junk(val) or _looks_like_gibberish(val):
+            return False, _please_retry(label, "Please enter real information, not random letters."), None
         if ftype == "address":
             if len(val) < 5 or not re.search(r"[A-Za-z]", val):
                 return False, "Please enter a valid street address.", None
             if val.isdigit():
                 return False, "Please enter a valid street address — not just numbers.", None
+            if not re.search(r"[A-Za-z]{2,}", val):
+                return False, "Please enter a valid street address.", None
+        if ftype == "textarea" and len(val) < 3:
+            return False, _please_retry(label), None
         min_len = field.get("min_length")
         max_len = field.get("max_length")
         if min_len and len(val) < min_len:
@@ -350,11 +480,166 @@ def validate_field_value(field: dict, raw_text: str, parsed_hint: Any = None) ->
             return False, f"Please enter a valid text answer for {label} — not only numbers.", None
         return True, None, val
 
-    # file / payment — still reject obvious junk
+    # Unknown types — still reject mashed keys locally; do not send them to the model.
     val = str(candidate).strip()
-    if _is_junk(val):
-        return False, f"Please provide a valid answer for {label}.", None
+    if _is_junk(val) or _looks_like_gibberish(val):
+        return False, _please_retry(label), None
     return True, None, val
+
+
+_REVIEW_MEDICAL_TITLES = {
+    "condition": "Conditions",
+    "allergy": "Allergies",
+    "medication": "Medications",
+}
+
+
+def _medical_alert_label_map(catalog: dict | None) -> dict[str, str]:
+    labels: dict[str, str] = {}
+    if not catalog:
+        return labels
+    for entries in catalog.values():
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            eid = entry.get("id")
+            elabel = entry.get("label")
+            if eid is None:
+                continue
+            key = str(eid).lower()
+            name = str(elabel) if elabel else str(eid)
+            labels[key] = name
+            labels[key.replace("-", "")] = name
+    return labels
+
+
+def format_medical_alerts_review(value: Any, catalog: dict | None = None) -> str:
+    """Human-readable conditions / allergies / medications for review UI."""
+    if not isinstance(value, dict):
+        return "None listed"
+    labels = _medical_alert_label_map(catalog)
+    parts: list[str] = []
+    for cat, title in _REVIEW_MEDICAL_TITLES.items():
+        block = value.get(cat) or {}
+        if not isinstance(block, dict):
+            continue
+        names: list[str] = []
+        stored = block.get("labels") if isinstance(block.get("labels"), dict) else {}
+        responses = block.get("responses") or {}
+        if isinstance(responses, dict):
+            for rid, ans in responses.items():
+                if str(ans).lower() != "yes":
+                    continue
+                key = str(rid)
+                name = stored.get(key) or stored.get(key.lower())
+                if not name:
+                    key_l = key.lower()
+                    name = labels.get(key_l) or labels.get(key_l.replace("-", ""))
+                names.append(str(name) if name else key)
+        write_ins = block.get("writeIns") or []
+        if isinstance(write_ins, list):
+            names.extend(str(w).strip() for w in write_ins if str(w).strip())
+        if names:
+            parts.append(f"{title}: {', '.join(names)}")
+    return " · ".join(parts) if parts else "None listed"
+
+
+def attach_medical_alert_labels(value: Any, catalog: dict | None) -> Any:
+    """Copy catalog names onto selected ids so review works even if the catalog later changes."""
+    if not isinstance(value, dict):
+        return value
+    labels = _medical_alert_label_map(catalog)
+    out: dict[str, Any] = {}
+    for cat, block in value.items():
+        if not isinstance(block, dict):
+            out[cat] = block
+            continue
+        stored = dict(block.get("labels") or {}) if isinstance(block.get("labels"), dict) else {}
+        responses = block.get("responses") or {}
+        if isinstance(responses, dict):
+            for rid in responses:
+                key = str(rid)
+                if stored.get(key) or stored.get(key.lower()):
+                    continue
+                key_l = key.lower()
+                name = labels.get(key_l) or labels.get(key_l.replace("-", ""))
+                if name:
+                    stored[key] = name
+        next_block = dict(block)
+        if stored:
+            next_block["labels"] = stored
+        out[cat] = next_block
+    return out
+
+
+def repair_stale_medical_alert_ids(fields: list[dict], draft: dict[str, Any], catalog: dict | None) -> str | None:
+    """Drop selected catalog ids that are not in the live list. Returns the field id if recapture is needed."""
+    labels = _medical_alert_label_map(catalog)
+    recapture: str | None = None
+    for f in fields:
+        if f.get("type") not in MEDICAL_ALERTS_TYPES:
+            continue
+        fid = f.get("id")
+        if not fid:
+            continue
+        val = draft.get(fid)
+        if not isinstance(val, dict):
+            continue
+        next_val: dict[str, Any] = {}
+        dropped = False
+        for cat, block in val.items():
+            if not isinstance(block, dict):
+                next_val[cat] = block
+                continue
+            stored = block.get("labels") if isinstance(block.get("labels"), dict) else {}
+            responses = block.get("responses") or {}
+            keep: dict[str, Any] = {}
+            if isinstance(responses, dict):
+                for rid, ans in responses.items():
+                    key = str(rid)
+                    key_l = key.lower()
+                    if (
+                        stored.get(key)
+                        or stored.get(key_l)
+                        or labels.get(key_l)
+                        or labels.get(key_l.replace("-", ""))
+                    ):
+                        keep[rid] = ans
+                    else:
+                        dropped = True
+            next_block = dict(block)
+            next_block["responses"] = keep
+            next_val[cat] = next_block
+        draft[fid] = next_val
+        if dropped:
+            recapture = fid
+    return recapture
+
+
+def review_items(fields: list[dict], draft: dict[str, Any], catalog: dict | None = None) -> list[dict[str, Any]]:
+    """Answered intake fields for the patient review-before-submit screen."""
+    items: list[dict[str, Any]] = []
+    for f in intake_fields(fields, draft):
+        fid = f.get("id")
+        if not fid:
+            continue
+        val = draft.get(fid)
+        if not _has_value(f, val):
+            continue
+        ftype = f.get("type") or "text"
+        if ftype in MEDICAL_ALERTS_TYPES:
+            val = format_medical_alerts_review(val, catalog)
+        items.append(
+            {
+                "field_id": fid,
+                "label": f.get("label") or "",
+                "type": ftype,
+                "value": val,
+            }
+        )
+    return items
 
 
 def progress_counts(fields: list[dict], draft: dict[str, Any]) -> tuple[int, int]:

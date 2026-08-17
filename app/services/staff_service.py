@@ -505,6 +505,9 @@ async def _ensure_medical_alerts_seeded(db: AsyncSession, practice_id: uuid.UUID
         for i, label in enumerate(labels):
             db.add(MedicalAlert(practice_id=practice_id, location_id=location_id, category=category, label=label, sort_order=i))
     await db.flush()
+    # Catalog was previously seeded after the request had already committed, so
+    # the IDs sent to the patient were rolled back and review could not resolve names.
+    await db.commit()
 
 
 async def list_medical_alerts(db: AsyncSession, ctx: StaffContext) -> list[MedicalAlert]:
@@ -630,48 +633,178 @@ def form_has_medical_alerts(template: FormTemplate) -> bool:
     return any(f.get("type") in ("medical_alerts_dropdown", "medical_alerts_radio") for f in template.fields)
 
 
+def _form_field(
+    fid: str,
+    ftype: str,
+    label: str,
+    *,
+    required: bool = True,
+    options: list[str] | None = None,
+    sync_target: str | None = None,
+    placeholder: str = "",
+    page: int = 1,
+) -> dict:
+    return {
+        "id": fid,
+        "type": ftype,
+        "label": label,
+        "required": required,
+        "options": options or [],
+        "page": page,
+        "min_length": None,
+        "max_length": None,
+        "conditional_field_id": None,
+        "conditional_value": "",
+        "sync_target": sync_target,
+        "placeholder": placeholder,
+    }
+
+
+_STARTER_FORMS: list[dict] = [
+    {
+        "name": "Medical History",
+        "form_type": "Medical",
+        "is_default": True,
+        "fields": [
+            _form_field("medical-alerts", "medical_alerts_dropdown", "Medical History", sync_target="patient.medical_alerts"),
+        ],
+    },
+    {
+        "name": "Patient Information",
+        "form_type": "Profile",
+        "is_default": False,
+        "fields": [
+            _form_field("first-name", "text", "First name", sync_target="patient.first_name", placeholder="Jane"),
+            _form_field("last-name", "text", "Last name", sync_target="patient.last_name", placeholder="Doe"),
+            _form_field("dob", "date", "Date of birth", sync_target="patient.date_of_birth"),
+            _form_field("email", "email", "Email", sync_target="patient.email", placeholder="jane@email.com"),
+            _form_field("phone", "phone", "Phone number", sync_target="patient.phone", placeholder="(415) 555-0100"),
+            _form_field("address", "address", "Home address", sync_target="patient.address", placeholder="123 Main St, Brooklyn, NY 11225"),
+        ],
+    },
+    {
+        "name": "Visit Preferences",
+        "form_type": "Intake",
+        "is_default": False,
+        "fields": [
+            _form_field("married", "radio", "Are you married?", options=["Yes", "No"], sync_target="patient.marital_status"),
+            _form_field(
+                "visit-reason",
+                "dropdown",
+                "Reason for today's visit",
+                options=["Cleaning", "Tooth pain", "Check-up", "Follow-up", "Other"],
+                sync_target="appointment.visit_reason",
+            ),
+            _form_field(
+                "reminders",
+                "select_boxes",
+                "How should we remind you?",
+                required=False,
+                options=["Text", "Email", "Phone call"],
+                sync_target="patient.reminders",
+            ),
+            _form_field("language", "preferred_language", "Preferred language", sync_target="patient.preferred_language"),
+            _form_field("notes", "textarea", "Anything else we should know?", required=False, placeholder="Optional", sync_target="appointment.notes"),
+        ],
+    },
+    {
+        "name": "Insurance & Payment",
+        "form_type": "Financial",
+        "is_default": False,
+        "fields": [
+            _form_field("has-insurance", "radio", "Do you have dental insurance?", options=["Yes", "No"]),
+            _form_field("insurance", "insurance", "Insurance provider", required=False, sync_target="patient.insurance"),
+            _form_field("card-front", "file", "Insurance card photo", required=False),
+            _form_field("payment", "payment", "How will you pay today?", required=False, sync_target="patient.payment_preference"),
+        ],
+    },
+    {
+        "name": "Consent & Signature",
+        "form_type": "Consent",
+        "is_default": False,
+        "fields": [
+            _form_field(
+                "hipaa-consent",
+                "checkbox",
+                "I agree to the HIPAA privacy practices and to receive treatment today.",
+                sync_target="patient.hipaa_consent",
+            ),
+            _form_field("consent-notes", "textarea", "Questions or comments for the office", required=False, sync_target="appointment.notes"),
+            _form_field("signature", "signature", "Type your full name to sign", sync_target="patient.signature"),
+            _form_field("signed-on", "date", "Today's date", sync_target="patient.signed_on"),
+        ],
+    },
+]
+
+
+async def _ensure_named_form_template(
+    db: AsyncSession,
+    practice_id: uuid.UUID,
+    location_id: uuid.UUID,
+    spec: dict,
+) -> None:
+    result = await db.execute(
+        select(FormTemplate).where(
+            FormTemplate.practice_id == practice_id,
+            FormTemplate.location_id == location_id,
+            FormTemplate.name == spec["name"],
+        )
+    )
+    tpl = result.scalar_one_or_none()
+    desired = {f.get("id"): f for f in spec["fields"]}
+    if tpl is not None:
+        fields = list(tpl.fields or [])
+        changed = False
+        next_fields: list[dict] = []
+        for field in fields:
+            src = desired.get(field.get("id"))
+            if src and src.get("sync_target") and field.get("sync_target") != src.get("sync_target"):
+                next_fields.append({**field, "sync_target": src["sync_target"]})
+                changed = True
+            else:
+                next_fields.append(field)
+        if changed:
+            tpl.fields = next_fields
+        return
+    existing_default = await db.execute(
+        select(func.count()).select_from(FormTemplate).where(
+            FormTemplate.practice_id == practice_id,
+            FormTemplate.location_id == location_id,
+            FormTemplate.is_default.is_(True),
+        )
+    )
+    make_default = bool(spec.get("is_default")) and existing_default.scalar_one() == 0
+    db.add(
+        FormTemplate(
+            practice_id=practice_id,
+            location_id=location_id,
+            name=spec["name"],
+            form_type=spec.get("form_type") or "",
+            source="build",
+            status="active",
+            display_type="wizard",
+            fields=spec["fields"],
+            page_count=1,
+            is_default=make_default,
+        )
+    )
+
+
+async def seed_starter_form_templates(db: AsyncSession, practice_id: uuid.UUID, location_id: uuid.UUID) -> None:
+    """Idempotent starter templates so local/dev locations can test chat + standard intake."""
+    await _ensure_medical_alerts_seeded(db, practice_id, location_id)
+    for spec in _STARTER_FORMS:
+        await _ensure_named_form_template(db, practice_id, location_id, spec)
+    await db.flush()
+
+
 async def seed_default_medical_history_form(
     db: AsyncSession, practice_id: uuid.UUID, location_id: uuid.UUID
 ) -> None:
     """New locations get a Medical History form out of the box — "the Medical History
     form is automatically generated when the Synchronizer is installed" (matches this
     app's equivalent moment: when a new location is created)."""
-    result = await db.execute(
-        select(func.count()).select_from(FormTemplate).where(
-            FormTemplate.practice_id == practice_id,
-            FormTemplate.location_id == location_id,
-        )
-    )
-    if result.scalar_one() > 0:
-        return
-    db.add(
-        FormTemplate(
-            practice_id=practice_id,
-            location_id=location_id,
-            name="Medical History",
-            form_type="Medical",
-            source="build",
-            status="active",
-            display_type="wizard",
-            fields=[
-                {
-                    "id": "medical-alerts",
-                    "type": "medical_alerts_dropdown",
-                    "label": "Medical History",
-                    "required": True,
-                    "options": [],
-                    "page": 1,
-                    "min_length": None,
-                    "max_length": None,
-                    "conditional_field_id": None,
-                    "conditional_value": "",
-                }
-            ],
-            page_count=1,
-            is_default=True,
-        )
-    )
-    await db.flush()
+    await seed_starter_form_templates(db, practice_id, location_id)
 
 
 async def list_form_templates(
@@ -1281,6 +1414,12 @@ async def send_form(
     if expires_at <= now:
         raise ValueError("Expiration date must be in the future")
 
+    from app.services.form_completion_service import get_upcoming_appointment
+
+    linked_appt = await get_upcoming_appointment(
+        db, patient_id=data.patient_id, location_id=ctx.location_id
+    )
+
     requests: list[FormRequest] = []
     for tpl in templates:
         req = FormRequest(
@@ -1289,6 +1428,7 @@ async def send_form(
             patient_id=data.patient_id,
             form_template_id=tpl.id,
             expires_at=expires_at,
+            appointment_id=linked_appt.id if linked_appt else None,
         )
         db.add(req)
         requests.append(req)
@@ -1512,6 +1652,7 @@ async def evaluate_automatic_form_requests(
             patient_id=appointment.patient_id,
             form_template_id=tpl.id,
             expires_at=expires_at,
+            appointment_id=appointment.id,
         )
         db.add(req)
         new_requests.append(req)

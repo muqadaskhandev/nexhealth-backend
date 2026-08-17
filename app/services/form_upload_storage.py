@@ -1,6 +1,7 @@
 """Local file storage for digitize-form uploads."""
 from __future__ import annotations
 
+import re
 import uuid
 from pathlib import Path
 
@@ -40,7 +41,9 @@ async def save_form_upload(upload: UploadFile) -> str:
     if len(data) > MAX_FORM_UPLOAD_BYTES:
         raise ValueError("File must be 10 MB or smaller.")
 
-    filename = f"{uuid.uuid4().hex}{ext}"
+    original = Path(upload.filename or "file").name
+    stem = re.sub(r"[^A-Za-z0-9._-]+", "_", Path(original).stem).strip("._")[:80] or "file"
+    filename = f"{uuid.uuid4().hex}_{stem}{ext}"
     dest = form_uploads_dir() / filename
     dest.write_bytes(data)
     return f"/uploads/form_uploads/{filename}"

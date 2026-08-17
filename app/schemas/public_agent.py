@@ -6,6 +6,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from app.schemas.public_forms import PublicAppointmentOut
+
 
 class AgentVerifyRequest(BaseModel):
     last_name: str = Field(min_length=1)
@@ -54,6 +56,13 @@ class AgentProgressOut(BaseModel):
     total: int
 
 
+class AgentReviewItemOut(BaseModel):
+    field_id: str
+    label: str
+    type: str = "text"
+    value: Any = None
+
+
 class AgentSessionOut(BaseModel):
     session_id: uuid.UUID
     status: str
@@ -68,6 +77,8 @@ class AgentSessionOut(BaseModel):
     validation_status: str | None = None
     current_field: AgentFieldOut | None = None
     medical_alerts: dict[str, list[dict]] | None = None
+    upcoming_appointment: PublicAppointmentOut | None = None
+    review_items: list[AgentReviewItemOut] = Field(default_factory=list)
 
 
 class AgentAnswerDetailOut(BaseModel):
@@ -96,3 +107,10 @@ class AgentSessionDetailOut(BaseModel):
 class AgentCompleteOut(BaseModel):
     remaining: int
     message: str = "Your intake has been submitted. Thank you!"
+    upcoming_appointment: PublicAppointmentOut | None = None
+    forms_complete_for_visit: bool = False
+
+
+class AgentUploadOut(BaseModel):
+    url: str
+    filename: str

@@ -57,9 +57,13 @@ async def verify(
 
     forms = await public_forms_service.list_pending_forms(db, patient, token_row)
     branding = await public_forms_service.get_branding(db, token_row)
+    from app.services.form_completion_service import appointment_out, get_upcoming_appointment
+
+    appt = await get_upcoming_appointment(db, patient_id=patient.id, location_id=token_row.location_id)
     return PublicVerifyOut(
         patient_name=f"{patient.first_name} {patient.last_name}".strip(),
         forms=forms,
+        upcoming_appointment=appointment_out(appt),
         **branding,
     )
 

@@ -1,7 +1,8 @@
 """Public (unauthenticated) conversational intake agent routes."""
 from datetime import date
+from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile, status
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,12 +17,15 @@ from app.schemas.public_agent import (
     AgentFieldOut,
     AgentMessageRequest,
     AgentProgressOut,
+    AgentReviewItemOut,
     AgentSessionOut,
     AgentSessionStartRequest,
     AgentTurnOut,
+    AgentUploadOut,
 )
-from app.services import agent_service, field_validation_service, public_forms_service
+from app.services import agent_service, field_validation_service, form_upload_storage, public_forms_service
 from app.services.agent_field_meta import field_meta, find_field
+from app.services.form_completion_service import appointment_out, resolve_visit
 from app.services.staff_service import form_has_medical_alerts, get_medical_alert_catalog
 
 router = APIRouter(tags=["public-agent"])
@@ -75,9 +79,34 @@ async def _session_response(
     validation_status: str | None = None,
     current_field_id: str | None = None,
 ) -> AgentSessionOut:
-    fid = current_field_id if current_field_id is not None else session.current_field_id
+    fields = tpl.fields or [] if tpl else []
     medical = await _medical_alerts_for_template(db, tpl)
+    draft_answers = dict(draft_answers or {})
+    recapture = field_validation_service.repair_stale_medical_alert_ids(fields, draft_answers, medical)
+    if recapture:
+        session.current_field_id = recapture
+        session.draft_answers = draft_answers
+        done = False
+        fid = recapture
+    else:
+        fid = current_field_id if current_field_id is not None else session.current_field_id
+        for f in fields:
+            if f.get("type") in field_validation_service.MEDICAL_ALERTS_TYPES and f.get("id") in draft_answers:
+                draft_answers[f["id"]] = field_validation_service.attach_medical_alert_labels(
+                    draft_answers[f["id"]], medical
+                )
+        session.draft_answers = draft_answers
     current = _current_field_out(tpl, fid)
+    if recapture:
+        answered, total = field_validation_service.progress_counts(fields, draft_answers)
+        progress = {"answered": answered, "total": total}
+    appt = await resolve_visit(
+        db,
+        patient_id=patient.id,
+        location_id=session.location_id,
+        form_request_id=session.form_request_id,
+    )
+    await db.commit()
     return AgentSessionOut(
         session_id=session.id,
         status=session.status.value,
@@ -92,6 +121,11 @@ async def _session_response(
         validation_status=validation_status,
         current_field=current,
         medical_alerts=medical,
+        upcoming_appointment=appointment_out(appt),
+        review_items=[
+            AgentReviewItemOut(**item)
+            for item in field_validation_service.review_items(fields, draft_answers, medical)
+        ],
     )
 
 
@@ -213,6 +247,38 @@ async def send_message(
     )
 
 
+@router.post("/api/public/agent/{token}/upload", response_model=AgentUploadOut)
+@limiter.limit("10/minute")
+async def upload_file(
+    request: Request,
+    token: str,
+    file: UploadFile = File(...),
+    last_name: str = Form(...),
+    dob: str = Form(...),
+    session_id: UUID = Form(...),
+    db: AsyncSession = Depends(get_db),
+):
+    token_row = await public_forms_service.get_token(db, token)
+    if token_row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="This link is invalid or has expired.")
+
+    parsed_dob = _parse_dob(dob)
+    patient = await public_forms_service.verify_patient(db, token_row, last_name, parsed_dob)
+    if patient is None:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="Verification failed.")
+
+    session = await agent_service.get_session(db, session_id)
+    if session is None or session.patient_id != patient.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Session not found")
+
+    try:
+        url = await form_upload_storage.save_form_upload(file)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+
+    return AgentUploadOut(url=url, filename=file.filename or url.rsplit("/", 1)[-1])
+
+
 @router.post("/api/public/agent/{token}/complete", response_model=AgentCompleteOut)
 @limiter.limit("10/minute")
 async def complete_intake(
@@ -239,5 +305,16 @@ async def complete_intake(
     except ValueError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
 
+    appt = await resolve_visit(
+        db,
+        patient_id=patient.id,
+        location_id=session.location_id,
+        form_request_id=session.form_request_id,
+    )
+    complete_for_visit = remaining <= 0 or (appt is not None and appt.forms_status.value == "complete")
     await db.commit()
-    return AgentCompleteOut(remaining=remaining)
+    return AgentCompleteOut(
+        remaining=remaining,
+        upcoming_appointment=appointment_out(appt),
+        forms_complete_for_visit=complete_for_visit,
+    )

@@ -148,11 +148,73 @@ def send_form_intake(
             f"Hi {patient_name},\n\nPlease complete the following form(s): {form_names}."
         )
 
+    # Plain-text fallback
     text = f"{intro}\n\n{cta}: {primary_link}\n"
-    html_parts = [f"<p>{intro.replace(chr(10), '<br/>')}</p>", f'<p><a href="{primary_link}">{cta}</a></p>']
     if secondary_link:
         text += f"\nClassic form: {secondary_link}\n"
-        html_parts.append(f'<p><a href="{secondary_link}">Open classic form</a></p>')
-    html = "\n".join(html_parts)
+
+    # Simple "email card" layout (inline styles for broad client support)
+    intro_html = intro.replace(chr(10), "<br/>")
+    cta_button = (
+        f'<a href="{primary_link}" '
+        f'style="display:inline-block;background:#0d9488;color:#ffffff;'
+        f'padding:12px 18px;border-radius:8px;text-decoration:none;font-weight:600;" '
+        f'target="_blank" rel="noopener"> {cta} </a>'
+    )
+
+    secondary_html = ""
+    if secondary_link:
+        secondary_html = (
+            f'<div style="margin-top:14px;text-align:center;">'
+            f'<a href="{secondary_link}" style="color:#0d9488;text-decoration:underline;font-size:14px;" '
+            f'target="_blank" rel="noopener">Open classic form</a>'
+            f"</div>"
+        )
+
+    html = f"""
+    <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="background:#f9fafb;padding:24px 12px;">
+      <tr>
+        <td align="center">
+          <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="600" style="max-width:600px;background:#ffffff;border-radius:16px;overflow:hidden;">
+            <tr>
+              <td style="padding:22px 22px 10px 22px;">
+                <div style="font-family:Arial,Helvetica,sans-serif;">
+                  <div style="font-size:12px;letter-spacing:0.08em;text-transform:uppercase;color:#6b7280;">NextHealth</div>
+                  <div style="margin-top:8px;font-size:22px;font-weight:700;color:#111827;">Complete your intake</div>
+                  <div style="margin-top:6px;font-size:14px;color:#4b5563;">{practice_name}</div>
+                </div>
+              </td>
+            </tr>
+
+            <tr>
+              <td style="padding:8px 22px 4px 22px;">
+                <div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.5;color:#374151;">
+                  {intro_html}
+                </div>
+              </td>
+            </tr>
+
+            <tr>
+              <td style="padding:16px 22px 22px 22px;">
+                <div style="text-align:center;">
+                  {cta_button}
+                </div>
+                {secondary_html}
+              </td>
+            </tr>
+
+            <tr>
+              <td style="padding:0 22px 22px 22px;">
+                <div style="font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:1.4;color:#6b7280;text-align:center;">
+                  If you need help, you can reply to this email.
+                </div>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+    """.strip()
+
     send_email(to=to, subject=subject, html=html, text=text)
 

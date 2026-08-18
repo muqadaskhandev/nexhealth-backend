@@ -57,9 +57,14 @@ async def verify(
 
     forms = await public_forms_service.list_pending_forms(db, patient, token_row)
     branding = await public_forms_service.get_branding(db, token_row)
-    from app.services.form_completion_service import appointment_out, get_upcoming_appointment
+    from app.services.form_completion_service import appointment_out, resolve_visit
 
-    appt = await get_upcoming_appointment(db, patient_id=patient.id, location_id=token_row.location_id)
+    appt = await resolve_visit(
+        db,
+        patient_id=patient.id,
+        location_id=token_row.location_id,
+        form_access_token_id=token_row.id,
+    )
     return PublicVerifyOut(
         patient_name=f"{patient.first_name} {patient.last_name}".strip(),
         forms=forms,
@@ -88,8 +93,23 @@ async def submit(
         remaining = await public_forms_service.submit_form(db, patient, payload.form_request_id, payload.answers)
     except ValueError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+
+    from app.services.form_completion_service import appointment_out, resolve_visit
+
+    appt = await resolve_visit(
+        db,
+        patient_id=patient.id,
+        location_id=token_row.location_id,
+        form_request_id=payload.form_request_id,
+        form_access_token_id=token_row.id,
+    )
+    complete_for_visit = remaining <= 0 or (appt is not None and appt.forms_status.value == "complete")
     await db.commit()
-    return PublicSubmitOut(remaining=remaining)
+    return PublicSubmitOut(
+        remaining=remaining,
+        upcoming_appointment=appointment_out(appt),
+        forms_complete_for_visit=complete_for_visit,
+    )
 
 
 @router.get("/api/public/packets/{code}", response_model=PublicPacketInfoOut)

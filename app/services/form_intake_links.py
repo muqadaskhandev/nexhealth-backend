@@ -1,9 +1,21 @@
 """Build patient-facing form / agent intake links for outbound messages."""
 from __future__ import annotations
 
+import uuid
+
 from app.config import settings
+from app.services.booking_availability_service import practice_slug
 
 IntakeMode = str  # "form" | "agent" | "both"
+
+
+def build_booking_path(practice_name: str, practice_id: uuid.UUID, location_id: uuid.UUID | None = None) -> str:
+    """Relative URL to the existing public booking widget — not an in-chat booker."""
+    slug = practice_slug(practice_name or "")
+    qs = [f"lid={str(practice_id)[:8]}"]
+    if location_id is not None:
+        qs.append(f"location_ids={location_id}")
+    return f"/appt/{slug}?{'&'.join(qs)}"
 
 
 def build_intake_links(raw_token: str, intake_mode: str = "agent") -> dict[str, str]:

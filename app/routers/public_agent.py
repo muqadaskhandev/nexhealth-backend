@@ -105,6 +105,13 @@ async def _session_response(
         patient_id=patient.id,
         location_id=session.location_id,
         form_request_id=session.form_request_id,
+        form_access_token_id=session.form_access_token_id,
+    )
+    from app.services.form_intake_links import build_booking_path
+
+    practice = await db.get(Practice, session.practice_id)
+    booking_url = (
+        build_booking_path(practice.name, practice.id, session.location_id) if practice is not None else None
     )
     await db.commit()
     return AgentSessionOut(
@@ -122,6 +129,7 @@ async def _session_response(
         current_field=current,
         medical_alerts=medical,
         upcoming_appointment=appointment_out(appt),
+        booking_url=booking_url,
         review_items=[
             AgentReviewItemOut(**item)
             for item in field_validation_service.review_items(fields, draft_answers, medical)
@@ -310,11 +318,19 @@ async def complete_intake(
         patient_id=patient.id,
         location_id=session.location_id,
         form_request_id=session.form_request_id,
+        form_access_token_id=session.form_access_token_id,
     )
     complete_for_visit = remaining <= 0 or (appt is not None and appt.forms_status.value == "complete")
+    from app.services.form_intake_links import build_booking_path
+
+    practice = await db.get(Practice, session.practice_id)
+    booking_url = (
+        build_booking_path(practice.name, practice.id, session.location_id) if practice is not None else None
+    )
     await db.commit()
     return AgentCompleteOut(
         remaining=remaining,
         upcoming_appointment=appointment_out(appt),
+        booking_url=booking_url,
         forms_complete_for_visit=complete_for_visit,
     )

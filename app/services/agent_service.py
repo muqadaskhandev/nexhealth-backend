@@ -168,6 +168,7 @@ async def bootstrap_opening(
         patient_id=patient.id,
         location_id=session.location_id,
         form_request_id=session.form_request_id,
+        form_access_token_id=session.form_access_token_id,
     )
     if appt is not None:
         when = appt.starts_at.strftime("%A, %B %d, %Y at %I:%M %p").replace(" 0", " ")
@@ -331,6 +332,22 @@ async def process_message(
     if validation_status == "valid" and llm_result.get("parsed_value") is not None:
         fid = current.get("id")
         normalized = llm_result["parsed_value"]
+
+        # For existing patients, optionally enforce that identity fields
+        # (email/phone/DOB) match what's already on file.
+        from app.services.sync_target_service import patient_identity_mismatch_message
+
+        mismatch_msg = patient_identity_mismatch_message(patient, current, normalized)
+        if mismatch_msg:
+            agent_msg = mismatch_msg
+            await _add_turn(db, session.id, AgentTurnRole.AGENT, agent_msg, current.get("id"))
+            llm_result["assistant_message"] = agent_msg
+            llm_result["validation_status"] = "invalid"
+            llm_result["parsed_value"] = None
+            llm_result["done"] = False
+            await db.flush()
+            return _session_state(session, tpl, llm_result)
+
         draft[fid] = normalized
         session.draft_answers = draft
 

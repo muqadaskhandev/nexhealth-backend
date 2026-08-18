@@ -55,12 +55,19 @@ async def get_branding(db: AsyncSession, token: FormAccessToken) -> dict:
         if city_line:
             address_parts.append(city_line)
     full_address = ", ".join(address_parts)
+    from app.services.form_intake_links import build_booking_path
+
+    booking_url = None
+    if practice is not None:
+        booking_url = build_booking_path(practice.name, practice.id, token.location_id)
+
     return {
         "practice_name": practice.name if practice else "",
         "practice_logo_url": practice.logo_url if practice else None,
         "location_name": location.name if location else "",
         "location_address": full_address,
         "location_phone": location.phone if location else "",
+        "booking_url": booking_url,
     }
 
 
@@ -254,7 +261,7 @@ async def submit_form(
 
     if tpl and answers:
         from app.services.form_completion_service import resolve_visit
-        from app.services.sync_target_service import apply_intake_sync
+        from app.services.sync_target_service import apply_intake_sync, enforce_existing_patient_identity
 
         appt = await resolve_visit(
             db,
@@ -262,6 +269,11 @@ async def submit_form(
             location_id=req.location_id,
             form_request_id=req.id,
         )
+
+        # If an existing patient enters identity fields that conflict with
+        # their record, ask them to use the correct values (no silent overwrite).
+        enforce_existing_patient_identity(patient, tpl.fields or [], answers)
+
         apply_intake_sync(patient, tpl.fields or [], answers, appointment=appt)
 
     await apply_sync_outcome(db, req, patient)

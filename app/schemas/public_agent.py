@@ -78,6 +78,7 @@ class AgentSessionOut(BaseModel):
     current_field: AgentFieldOut | None = None
     medical_alerts: dict[str, list[dict]] | None = None
     upcoming_appointment: PublicAppointmentOut | None = None
+    booking_url: str | None = None
     review_items: list[AgentReviewItemOut] = Field(default_factory=list)
 
 
@@ -108,6 +109,7 @@ class AgentCompleteOut(BaseModel):
     remaining: int
     message: str = "Your intake has been submitted. Thank you!"
     upcoming_appointment: PublicAppointmentOut | None = None
+    booking_url: str | None = None
     forms_complete_for_visit: bool = False
 
 

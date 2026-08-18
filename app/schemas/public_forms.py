@@ -14,6 +14,7 @@ class PublicTokenInfoOut(BaseModel):
     location_name: str
     location_address: str
     location_phone: str
+    booking_url: str | None = None
 
 
 class PublicVerifyRequest(BaseModel):
@@ -58,6 +59,8 @@ class PublicAppointmentOut(BaseModel):
     provider_name: str
     appointment_type: str
     forms_status: str
+    visit_reason: str | None = None
+    visit_notes: str | None = None
 
 
 class PublicVerifyOut(BaseModel):
@@ -67,6 +70,7 @@ class PublicVerifyOut(BaseModel):
     location_name: str
     location_address: str
     location_phone: str
+    booking_url: str | None = None
     forms: list[PublicFormOut]
     upcoming_appointment: PublicAppointmentOut | None = None
 
@@ -80,6 +84,8 @@ class PublicSubmitRequest(BaseModel):
 
 class PublicSubmitOut(BaseModel):
     remaining: int
+    upcoming_appointment: PublicAppointmentOut | None = None
+    forms_complete_for_visit: bool = False
 
 
 class PublicPacketFormOut(BaseModel):

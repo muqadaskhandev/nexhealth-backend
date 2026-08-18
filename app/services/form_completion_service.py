@@ -20,14 +20,15 @@ def _now() -> datetime:
 def appointment_out(appt: Appointment | None) -> dict | None:
     if appt is None:
         return None
+    meta = appt.meta or {}
     return {
         "id": str(appt.id),
         "starts_at": appt.starts_at.isoformat(),
         "provider_name": appt.provider_name,
         "appointment_type": appt.appointment_type,
         "forms_status": appt.forms_status.value,
-        "visit_reason": (appt.meta or {}).get("visit_reason") or None,
-        "visit_notes": (appt.meta or {}).get("visit_notes") or None,
+        "visit_reason": meta.get("visit_reason") or None,
+        "visit_notes": meta.get("visit_notes") or None,
     }
 
 
@@ -74,6 +75,7 @@ async def resolve_visit(
     patient_id: uuid.UUID,
     location_id: uuid.UUID,
     form_request_id: uuid.UUID | None = None,
+    form_access_token_id: uuid.UUID | None = None,
 ) -> Appointment | None:
     if form_request_id is not None:
         req = await db.get(FormRequest, form_request_id)
@@ -81,6 +83,25 @@ async def resolve_visit(
             appt = await db.get(Appointment, req.appointment_id)
             if appt is not None:
                 return appt
+
+    if form_access_token_id is not None:
+        result = await db.execute(
+            select(FormRequest)
+            .where(
+                FormRequest.form_access_token_id == form_access_token_id,
+                FormRequest.patient_id == patient_id,
+                FormRequest.archived_at.is_(None),
+                FormRequest.appointment_id.is_not(None),
+            )
+            .order_by(FormRequest.sent_at.desc())
+        )
+        for req in result.scalars().all():
+            if req.appointment_id is None:
+                continue
+            appt = await db.get(Appointment, req.appointment_id)
+            if appt is not None:
+                return appt
+
     return await get_upcoming_appointment(db, patient_id=patient_id, location_id=location_id)
 
 

@@ -115,6 +115,22 @@ def apply_intake_sync(
     updated: list[str] = []
     visit_notes = str((appointment.meta or {}).get("visit_notes") or "") if appointment else ""
 
+    if appointment is not None:
+        pending = dict(patient.meta or {})
+        pending_reason = str(pending.get("pending_visit_reason") or "").strip()
+        pending_notes = str(pending.get("pending_visit_notes") or "").strip()
+        if pending_reason:
+            _set_appt_meta(appointment, visit_reason=pending_reason)
+            updated.append("appointment.visit_reason")
+        if pending_notes:
+            visit_notes = _append_note(visit_notes, pending_notes)
+            _set_appt_meta(appointment, visit_notes=visit_notes)
+            updated.append("appointment.notes")
+        if pending_reason or pending_notes:
+            next_meta = {k: v for k, v in pending.items() if k not in ("pending_visit_reason", "pending_visit_notes")}
+            patient.meta = next_meta
+            flag_modified(patient, "meta")
+
     for field in fields:
         target = infer_sync_target(field)
         field_id = field.get("id")
@@ -179,8 +195,11 @@ def apply_intake_sync(
             continue
 
         if target == "appointment.visit_reason":
+            reason = str(raw).strip()
             if appointment is not None:
-                _set_appt_meta(appointment, visit_reason=str(raw).strip())
+                _set_appt_meta(appointment, visit_reason=reason)
+            else:
+                _set_meta(patient, pending_visit_reason=reason)
             updated.append(target)
             continue
 
@@ -210,3 +229,88 @@ def apply_intake_sync(
         _set_appt_meta(appointment, visit_notes=visit_notes)
 
     return updated
+
+
+def _digits_only(value: Any) -> str:
+    import re
+
+    return re.sub(r"\D", "", str(value or ""))
+
+
+def _normalize_email(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def _normalize_dob(value: Any) -> str:
+    # agent/forms validation normalizes DOB as ISO date string (YYYY-MM-DD)
+    if value is None or value == "":
+        return ""
+    if isinstance(value, date):
+        return value.isoformat()
+    text = str(value).strip()
+    # If it already looks like ISO, keep it; otherwise fall back to parse
+    import re
+
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+        return text
+    parsed = _parse_date(value)
+    return parsed.isoformat() if parsed else ""
+
+
+def patient_identity_mismatch_message(patient: Patient, field: dict, answers_value: Any) -> str | None:
+    """
+    Enforce that existing patient identity fields match what's already on file.
+
+    This is intentionally conservative: it only applies to identity fields that
+    are typically verified/owned by the existing patient record.
+    """
+    target = infer_sync_target(field)
+    if not target or not isinstance(target, str):
+        return None
+
+    # Only enforce these specific patient identity fields.
+    if target not in {"patient.email", "patient.phone", "patient.date_of_birth", "patient.dob"}:
+        return None
+
+    # If we don't have a value on file yet, don't block intake.
+    if target in {"patient.email"}:
+        existing = getattr(patient, "email", None)
+        if not existing:
+            return None
+        a = _normalize_email(answers_value)
+        b = _normalize_email(existing)
+        if a and b and a != b:
+            return f"Please enter the email we already have on file: {existing}."
+
+    if target in {"patient.phone"}:
+        existing = getattr(patient, "phone", None)
+        if not existing:
+            return None
+        a = _digits_only(answers_value)
+        b = _digits_only(existing)
+        if a and b and a != b:
+            return f"Please enter the phone number we already have on file: {existing}."
+
+    if target in {"patient.date_of_birth", "patient.dob"}:
+        existing = getattr(patient, "dob", None)
+        if not existing:
+            return None
+        a = _normalize_dob(answers_value)
+        b = _normalize_dob(existing)
+        if a and b and a != b:
+            return f"Please enter the date of birth we already have on file: {existing.isoformat() if hasattr(existing, 'isoformat') else existing}."
+
+    return None
+
+
+def enforce_existing_patient_identity(patient: Patient, fields: list[dict], answers: dict[str, Any]) -> None:
+    """
+    Raise ValueError if identity fields provided by an existing patient don't match the record.
+    """
+    for field in fields:
+        fid = field.get("id")
+        if not fid or fid not in answers:
+            continue
+        msg = patient_identity_mismatch_message(patient, field, answers.get(fid))
+        if msg:
+            raise ValueError(msg)

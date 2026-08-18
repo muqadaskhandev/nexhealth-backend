@@ -363,6 +363,18 @@ def question_for_field(field: dict) -> str:
     label = field.get("label") or "the next question"
     ftype = field.get("type", "text")
     options = field.get("options") or []
+    lower_label = label.strip().lower()
+
+    # Make name fields user-friendly in the scripted mode.
+    # Otherwise the chat often shows only the bare label ("First name"),
+    # which is easy to miss for patients.
+    if lower_label in ("first name", "patient first name"):
+        return "What is your first name?"
+    if lower_label in ("last name", "patient last name"):
+        return "What is your last name?"
+    if lower_label in ("full name", "your full name"):
+        return "What is your full name?"
+
     if ftype in ("dropdown", "radio") and options:
         return f"{label}\n\nOptions: {', '.join(options)}"
     if ftype == "select_boxes" and options:

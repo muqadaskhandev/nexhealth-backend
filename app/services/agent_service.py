@@ -200,8 +200,13 @@ async def process_message(
 
     fields = tpl.fields or []
     draft = dict(session.draft_answers or {})
+    if field_validation_service.prune_hidden_draft_answers(fields, draft):
+        session.draft_answers = draft
     current_id = session.current_field_id
     current = next((f for f in fields if f.get("id") == current_id), None)
+    if current is not None and not field_validation_service.field_is_visible(current, draft):
+        current = None
+        session.current_field_id = None
     if current is None:
         current = field_validation_service.next_unanswered_field(fields, draft)
         if current is None:
@@ -214,6 +219,7 @@ async def process_message(
     if structured_value is None and not current.get("required") and message.strip().lower() in skip_tokens:
         fid = current.get("id")
         draft[fid] = ""
+        field_validation_service.prune_hidden_draft_answers(fields, draft)
         session.draft_answers = draft
         nxt = field_validation_service.next_unanswered_field(fields, draft)
         agent_msg = "No problem — we'll skip that one."
@@ -349,6 +355,7 @@ async def process_message(
             return _session_state(session, tpl, llm_result)
 
         draft[fid] = normalized
+        field_validation_service.prune_hidden_draft_answers(fields, draft)
         session.draft_answers = draft
 
         # Upsert agent answer row

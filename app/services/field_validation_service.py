@@ -79,19 +79,66 @@ DOB_SYNC_TARGETS = frozenset({"patient.date_of_birth", "patient.dob"})
 MAX_DOB_AGE_YEARS = 120
 
 
+def _normalized_condition_token(value: Any) -> str:
+    text = re.sub(r"\s+", " ", str(value or "").strip().lower())
+    text = re.sub(r"[.!?;:,]+$", "", text)
+    return text
+
+
+def condition_matches(expected: Any, actual: Any) -> bool:
+    """Robust conditional matching for dropdown/radio/checkbox/list values."""
+    if actual is None:
+        return False
+
+    exp = _normalized_condition_token(expected)
+    if exp == "":
+        return False
+
+    truthy = {"true", "yes", "y", "1", "checked"}
+    falsy = {"false", "no", "n", "0", "unchecked"}
+
+    if isinstance(actual, list):
+        return any(condition_matches(expected, item) for item in actual)
+
+    if isinstance(actual, bool):
+        return actual == (exp in truthy)
+
+    act = _normalized_condition_token(actual)
+    if act == exp:
+        return True
+    # Cross-map simple yes/no/boolean synonyms
+    if exp in truthy and act in truthy:
+        return True
+    if exp in falsy and act in falsy:
+        return True
+    return False
+
+
 def field_is_visible(field: dict, answers: dict[str, Any]) -> bool:
     cond_id = field.get("conditional_field_id")
     if not cond_id:
         return True
     expected = field.get("conditional_value", "")
     actual = answers.get(cond_id)
-    if actual is None:
-        return False
-    if isinstance(actual, list):
-        return expected in actual
-    if isinstance(actual, bool):
-        return actual == (expected.lower() == "true")
-    return str(actual) == expected
+    return condition_matches(expected, actual)
+
+
+def prune_hidden_draft_answers(fields: list[dict], draft: dict[str, Any]) -> bool:
+    """
+    Remove answers for fields that are currently hidden by conditions.
+    Returns True when draft was changed.
+    """
+    changed = False
+    for f in fields:
+        fid = f.get("id")
+        if not fid or fid not in draft:
+            continue
+        if f.get("type") in SKIP_TYPES:
+            continue
+        if not field_is_visible(f, draft):
+            draft.pop(fid, None)
+            changed = True
+    return changed
 
 
 def intake_fields(fields: list[dict], answers: dict[str, Any] | None = None) -> list[dict]:

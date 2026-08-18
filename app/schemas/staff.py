@@ -112,6 +112,43 @@ class AppointmentOut(BaseModel):
     visit_notes: str | None = None
 
 
+class AppointmentBookingAnswerOut(BaseModel):
+    id: str = ""
+    label: str
+    field_type: str = "text"
+    value: Any = None
+
+
+class AppointmentFormItemOut(BaseModel):
+    request_id: uuid.UUID
+    form_name: str
+    status: str
+    submitted_at: datetime | None = None
+    submitted_by: str
+    intake_source: str | None = None
+    ai_generated: bool = False
+    agent_session_id: uuid.UUID | None = None
+    answers: dict[str, Any] = Field(default_factory=dict)
+
+
+class AppointmentReceiptOut(BaseModel):
+    kind: str
+    amount: str | None = None
+    description: str
+    status: str
+    created_at: datetime | None = None
+    paid_at: datetime | None = None
+    details: str = ""
+
+
+class AppointmentDetailsOut(BaseModel):
+    appointment: AppointmentOut
+    booked_via: str
+    booking_answers: list[AppointmentBookingAnswerOut] = Field(default_factory=list)
+    forms: list[AppointmentFormItemOut] = Field(default_factory=list)
+    receipts: list[AppointmentReceiptOut] = Field(default_factory=list)
+
+
 class AppointmentCreate(BaseModel):
     patient_id: uuid.UUID
     provider_name: str

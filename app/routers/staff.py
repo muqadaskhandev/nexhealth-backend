@@ -15,6 +15,7 @@ from app.schemas.public_agent import AgentSessionDetailOut
 from app.schemas.staff import (
     ActivityOut,
     AppointmentCreate,
+    AppointmentDetailsOut,
     AppointmentOut,
     AppointmentUpdate,
     DashboardStats,
@@ -264,6 +265,24 @@ async def create_appointment(
     patient = await staff_service.get_patient(db, ctx, appt.patient_id)
     await db.commit()
     return _appt_out(appt, patient)
+
+
+@router.get("/api/appointments/{appt_id}/details", response_model=AppointmentDetailsOut)
+async def appointment_details(
+    appt_id: uuid.UUID,
+    ctx: StaffContext = Depends(get_staff_context),
+    db: AsyncSession = Depends(get_db),
+):
+    data = await staff_service.get_appointment_details(db, ctx, appt_id)
+    if data is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Appointment not found")
+    return AppointmentDetailsOut(
+        appointment=_appt_out(data["appointment"], data["patient"]),
+        booked_via=data["booked_via"],
+        booking_answers=data["booking_answers"],
+        forms=data["forms"],
+        receipts=data["receipts"],
+    )
 
 
 @router.patch("/api/appointments/{appt_id}", response_model=AppointmentOut)

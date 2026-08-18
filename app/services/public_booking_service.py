@@ -632,9 +632,31 @@ async def book_appointment(
 
     await appointment_types_service._attach_rules(db, [appt_type])  # noqa: SLF001
     insertion_rules = getattr(appt_type, "insertion_rules", [])
+    labeled_answers = []
+    for field in form_fields:
+        if field.field_type == BookingFieldType.NOTE:
+            continue
+        raw = payload.form_answers.get(str(field.id))
+        if raw is None or raw == "" or raw == []:
+            continue
+        labeled_answers.append(
+            {
+                "id": str(field.id),
+                "label": field.label,
+                "field_type": field.field_type.value
+                if hasattr(field.field_type, "value")
+                else str(field.field_type),
+                "value": raw,
+            }
+        )
+    channel = (payload.booking_channel or "form").strip().lower()
+    if channel not in ("agent", "form"):
+        channel = "form"
     booking_extra: dict = {
         "provider_id": str(provider.id),
         "form_answers": payload.form_answers,
+        "form_answers_labeled": labeled_answers,
+        "booking_channel": channel,
     }
     if insurance_name:
         booking_extra["insurance_name"] = insurance_name

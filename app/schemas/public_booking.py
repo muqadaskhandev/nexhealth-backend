@@ -88,6 +88,7 @@ class PublicBookRequest(BaseModel):
     utm_medium: str = ""
     utm_campaign: str = ""
     form_answers: dict[str, Any] = Field(default_factory=dict)
+    booking_channel: str = Field(default="form", pattern="^(form|agent)$")
 
 
 class PublicBookOut(BaseModel):

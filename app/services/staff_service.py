@@ -14,6 +14,8 @@ from app.core.staff_context import StaffContext
 from app.models.appointment_types import AppointmentTypeDef
 from app.models.practice import Practice
 from app.models.location import Location
+from app.models.agent import AgentSession
+from app.models.booking_form import BookingFormField
 from app.models.staff import (
     ActivityType,
     Appointment,
@@ -451,6 +453,210 @@ async def update_appointment(
     ):
         await send_booking_cancelled_email(db, ctx, appt)
     return appt
+
+
+def _booked_via_label(meta: dict) -> str:
+    channel = str(meta.get("booking_channel") or "").strip().lower()
+    if channel == "agent":
+        return "angelina"
+    if channel == "form" or str(meta.get("source") or "") == "online_booking":
+        return "patient"
+    return "staff"
+
+
+def _format_payment_details(value: object) -> str:
+    if not isinstance(value, dict):
+        return str(value or "")
+    name = str(value.get("cardholder_name") or "").strip()
+    last4 = str(value.get("last_four") or "").strip()
+    expiry = str(value.get("expiry") or "").strip()
+    parts = [p for p in [name, f"••••{last4}" if last4 else "", expiry] if p]
+    if value.get("authorized"):
+        parts.append("authorized")
+    return " · ".join(parts) if parts else "Payment on file"
+
+
+async def get_appointment_details(db: AsyncSession, ctx: StaffContext, appt_id: uuid.UUID) -> dict | None:
+    """Booking answers, intake forms (patient vs Angelina), receipts, and AI session ids."""
+    result = await db.execute(
+        select(Appointment, Patient)
+        .join(Patient, Patient.id == Appointment.patient_id)
+        .where(
+            Appointment.id == appt_id,
+            Appointment.practice_id == ctx.practice_id,
+            Appointment.location_id == ctx.location_id,
+        )
+    )
+    row = result.one_or_none()
+    if row is None:
+        return None
+    appt, patient = row
+    meta = dict(appt.meta or {})
+
+    labeled = list(meta.get("form_answers_labeled") or [])
+    if not labeled:
+        raw_answers = meta.get("form_answers") or {}
+        field_ids = [k for k in raw_answers.keys() if str(k).strip()]
+        fields_by_id: dict[str, BookingFormField] = {}
+        if field_ids:
+            uuid_ids = []
+            for key in field_ids:
+                try:
+                    uuid_ids.append(uuid.UUID(str(key)))
+                except ValueError:
+                    continue
+            if uuid_ids:
+                field_rows = await db.execute(
+                    select(BookingFormField).where(BookingFormField.id.in_(uuid_ids))
+                )
+                fields_by_id = {str(f.id): f for f in field_rows.scalars().all()}
+        for key, value in raw_answers.items():
+            field = fields_by_id.get(str(key))
+            labeled.append(
+                {
+                    "id": str(key),
+                    "label": field.label if field is not None else str(key),
+                    "field_type": field.field_type.value
+                    if field is not None and hasattr(field.field_type, "value")
+                    else "text",
+                    "value": value,
+                }
+            )
+
+    booking_answers = [
+        {
+            "id": str(item.get("id") or ""),
+            "label": str(item.get("label") or "Question"),
+            "field_type": str(item.get("field_type") or "text"),
+            "value": item.get("value"),
+        }
+        for item in labeled
+        if item.get("value") not in (None, "", [])
+    ]
+
+    form_rows = await db.execute(
+        select(FormRequest, FormTemplate)
+        .join(FormTemplate, FormTemplate.id == FormRequest.form_template_id)
+        .where(
+            FormRequest.practice_id == ctx.practice_id,
+            FormRequest.location_id == ctx.location_id,
+            FormRequest.appointment_id == appt.id,
+            FormRequest.archived_at.is_(None),
+        )
+        .order_by(FormRequest.sent_at.desc())
+    )
+    form_pairs = list(form_rows.all())
+    if not form_pairs:
+        window_start = (appt.created_at or appt.starts_at) - timedelta(hours=12)
+        window_end = (appt.created_at or appt.starts_at) + timedelta(days=2)
+        fallback_rows = await db.execute(
+            select(FormRequest, FormTemplate)
+            .join(FormTemplate, FormTemplate.id == FormRequest.form_template_id)
+            .where(
+                FormRequest.practice_id == ctx.practice_id,
+                FormRequest.location_id == ctx.location_id,
+                FormRequest.patient_id == patient.id,
+                FormRequest.appointment_id.is_(None),
+                FormRequest.archived_at.is_(None),
+                FormRequest.sent_at >= window_start,
+                FormRequest.sent_at <= window_end,
+            )
+            .order_by(FormRequest.sent_at.desc())
+        )
+        form_pairs = list(fallback_rows.all())
+    request_ids = [req.id for req, _tpl in form_pairs]
+
+    submissions_by_req: dict[uuid.UUID, FormSubmission] = {}
+    if request_ids:
+        sub_rows = await db.execute(
+            select(FormSubmission).where(FormSubmission.form_request_id.in_(request_ids))
+        )
+        for sub in sub_rows.scalars().all():
+            submissions_by_req[sub.form_request_id] = sub
+
+    sessions_by_req: dict[uuid.UUID, AgentSession] = {}
+    if request_ids:
+        sess_rows = await db.execute(
+            select(AgentSession)
+            .where(AgentSession.form_request_id.in_(request_ids))
+            .order_by(AgentSession.created_at.desc())
+        )
+        for sess in sess_rows.scalars().all():
+            sessions_by_req.setdefault(sess.form_request_id, sess)
+
+    forms: list[dict] = []
+    for req, tpl in form_pairs:
+        sub = submissions_by_req.get(req.id)
+        sess = sessions_by_req.get(req.id)
+        intake_source = (sub.intake_source if sub is not None else None) or (
+            "agent" if sess is not None else None
+        )
+        ai_generated = bool(sub.ai_generated) if sub is not None else False
+        if sub is None:
+            submitted_by = "pending"
+        elif intake_source == "agent" or ai_generated:
+            submitted_by = "angelina"
+        else:
+            submitted_by = "patient"
+        forms.append(
+            {
+                "request_id": req.id,
+                "form_name": tpl.name,
+                "status": req.status.value if hasattr(req.status, "value") else str(req.status),
+                "submitted_at": sub.submitted_at if sub is not None else None,
+                "submitted_by": submitted_by,
+                "intake_source": intake_source,
+                "ai_generated": ai_generated,
+                "agent_session_id": (sub.agent_session_id if sub is not None else None) or (sess.id if sess else None),
+                "answers": sub.answers if sub is not None else {},
+            }
+        )
+
+    receipts: list[dict] = []
+    for item in booking_answers:
+        if item["field_type"] != "payment":
+            continue
+        receipts.append(
+            {
+                "kind": "booking_card",
+                "amount": None,
+                "description": item["label"],
+                "status": "authorized" if isinstance(item["value"], dict) and item["value"].get("authorized") else "recorded",
+                "created_at": appt.starts_at,
+                "paid_at": None,
+                "details": _format_payment_details(item["value"]),
+            }
+        )
+    pay_rows = await db.execute(
+        select(PaymentLink)
+        .where(
+            PaymentLink.practice_id == ctx.practice_id,
+            PaymentLink.location_id == ctx.location_id,
+            PaymentLink.patient_id == patient.id,
+        )
+        .order_by(PaymentLink.created_at.desc())
+    )
+    for link in pay_rows.scalars().all():
+        receipts.append(
+            {
+                "kind": "payment_link",
+                "amount": str(link.amount),
+                "description": link.description or "Payment",
+                "status": link.status.value if hasattr(link.status, "value") else str(link.status),
+                "created_at": link.created_at,
+                "paid_at": link.paid_at,
+                "details": f"${link.amount}",
+            }
+        )
+
+    return {
+        "appointment": appt,
+        "patient": patient,
+        "booked_via": _booked_via_label(meta),
+        "booking_answers": booking_answers,
+        "forms": forms,
+        "receipts": receipts,
+    }
 
 
 # ── Waitlist ─────────────────────────────────────────────────────────────────

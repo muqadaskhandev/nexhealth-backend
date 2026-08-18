@@ -10,11 +10,12 @@ IntakeMode = str  # "form" | "agent" | "both"
 
 
 def build_booking_path(practice_name: str, practice_id: uuid.UUID, location_id: uuid.UUID | None = None) -> str:
-    """Relative URL to the existing public booking widget — not an in-chat booker."""
+    """Relative URL to public booking. `mode=both` lets the patient pick classic or Angelina chat."""
     slug = practice_slug(practice_name or "")
     qs = [f"lid={str(practice_id)[:8]}"]
     if location_id is not None:
         qs.append(f"location_ids={location_id}")
+    qs.append("mode=both")
     return f"/appt/{slug}?{'&'.join(qs)}"
 
 

@@ -425,7 +425,8 @@ def validate_field_value(field: dict, raw_text: str, parsed_hint: Any = None) ->
     if ftype in ("dropdown", "radio"):
         options = field.get("options") or []
         val = str(candidate).strip()
-        if _is_junk(val):
+        # Allow short tokens for option fields (e.g., "No", "Yes").
+        if _is_junk(val, allow_short=True):
             return False, f"Please choose one of: {', '.join(options)}." if options else f"Please choose a valid option for {label}.", None
         if options:
             match = _match_option(options, val)

@@ -280,7 +280,8 @@ def patient_identity_mismatch_message(patient: Patient, field: dict, answers_val
         a = _normalize_email(answers_value)
         b = _normalize_email(existing)
         if a and b and a != b:
-            return f"Please enter the email we already have on file: {existing}."
+            # Do not echo stored PII back to the user (privacy).
+            return "Please enter the email we already have on file for you."
 
     if target in {"patient.phone"}:
         existing = getattr(patient, "phone", None)
@@ -289,7 +290,8 @@ def patient_identity_mismatch_message(patient: Patient, field: dict, answers_val
         a = _digits_only(answers_value)
         b = _digits_only(existing)
         if a and b and a != b:
-            return f"Please enter the phone number we already have on file: {existing}."
+            # Do not echo stored PII back to the user (privacy).
+            return "Please enter the phone number we already have on file for you."
 
     if target in {"patient.date_of_birth", "patient.dob"}:
         existing = getattr(patient, "dob", None)
@@ -298,7 +300,8 @@ def patient_identity_mismatch_message(patient: Patient, field: dict, answers_val
         a = _normalize_dob(answers_value)
         b = _normalize_dob(existing)
         if a and b and a != b:
-            return f"Please enter the date of birth we already have on file: {existing.isoformat() if hasattr(existing, 'isoformat') else existing}."
+            # Do not echo stored PII back to the user (privacy).
+            return "Please enter the same date of birth we have on file for you."
 
     return None
 

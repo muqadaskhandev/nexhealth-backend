@@ -328,6 +328,26 @@ def _phone_digits(value: str) -> str:
     return re.sub(r"\D", "", value)
 
 
+def _option_token(value: str) -> str:
+    """Normalize option text for tolerant matching (case/punctuation/spacing)."""
+    text = re.sub(r"\s+", " ", str(value or "").strip().lower())
+    # Trim common trailing punctuation so "No." matches "No"
+    text = re.sub(r"[.!?;:,]+$", "", text)
+    return text
+
+
+def _match_option(options: list[str], value: str) -> str | None:
+    if not options:
+        return None
+    needle = _option_token(value)
+    if not needle:
+        return None
+    for opt in options:
+        if _option_token(opt) == needle:
+            return opt
+    return None
+
+
 def validate_field_value(field: dict, raw_text: str, parsed_hint: Any = None) -> tuple[bool, str | None, Any]:
     """Validate and normalize a single field answer. Returns (ok, error_message, normalized_value)."""
     ftype = field.get("type", "text")
@@ -407,9 +427,9 @@ def validate_field_value(field: dict, raw_text: str, parsed_hint: Any = None) ->
         val = str(candidate).strip()
         if _is_junk(val):
             return False, f"Please choose one of: {', '.join(options)}." if options else f"Please choose a valid option for {label}.", None
-        if options and val not in options:
-            match = next((o for o in options if o.lower() == val.lower()), None)
-            if match:
+        if options:
+            match = _match_option(options, val)
+            if match is not None:
                 return True, None, match
             return False, f"Please choose one of: {', '.join(options)}.", None
         if not val or _looks_like_gibberish(val):
@@ -425,10 +445,10 @@ def validate_field_value(field: dict, raw_text: str, parsed_hint: Any = None) ->
         if not vals and field.get("required"):
             return False, f"Please choose at least one option for {label}.", None
         if options:
-            bad = [v for v in vals if v not in options and not any(o.lower() == v.lower() for o in options)]
+            bad = [v for v in vals if _match_option(options, v) is None]
             if bad:
                 return False, f"Please choose from: {', '.join(options)}.", None
-            vals = [next((o for o in options if o.lower() == v.lower()), v) for v in vals]
+            vals = [(_match_option(options, v) or v) for v in vals]
         return True, None, vals
 
     if ftype in MEDICAL_ALERTS_TYPES:

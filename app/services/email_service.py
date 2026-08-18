@@ -218,3 +218,139 @@ def send_form_intake(
 
     send_email(to=to, subject=subject, html=html, text=text)
 
+
+def send_booking_confirmation(
+    *,
+    to: str,
+    patient_name: str,
+    practice_name: str,
+    location_name: str,
+    location_address: str,
+    appointment_type: str,
+    provider_name: str,
+    when: str,
+) -> None:
+    """Email the patient that their online booking is confirmed."""
+    subject = f"Your appointment is confirmed — {practice_name}"
+    where = location_name if not location_address else f"{location_name}, {location_address}"
+    text = (
+        f"Hi {patient_name},\n\n"
+        f"Your appointment with {practice_name} is confirmed.\n\n"
+        f"{appointment_type} with {provider_name}\n"
+        f"{when}\n"
+        f"{where}\n\n"
+        "If you need to change or cancel, please contact the practice.\n"
+    )
+    html = f"""
+    <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="background:#f9fafb;padding:24px 12px;">
+      <tr>
+        <td align="center">
+          <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="600" style="max-width:600px;background:#ffffff;border-radius:16px;overflow:hidden;">
+            <tr>
+              <td style="padding:22px 22px 10px 22px;">
+                <div style="font-family:Arial,Helvetica,sans-serif;">
+                  <div style="font-size:12px;letter-spacing:0.08em;text-transform:uppercase;color:#6b7280;">NextHealth</div>
+                  <div style="margin-top:8px;font-size:22px;font-weight:700;color:#111827;">Booking confirmed</div>
+                  <div style="margin-top:6px;font-size:14px;color:#4b5563;">{practice_name}</div>
+                </div>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:8px 22px 4px 22px;">
+                <div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.5;color:#374151;">
+                  Hi {patient_name}, your appointment is confirmed.
+                </div>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:12px 22px 22px 22px;">
+                <div style="font-family:Arial,Helvetica,sans-serif;background:#f0fdfa;border:1px solid #ccfbf1;border-radius:12px;padding:16px;color:#134e4a;">
+                  <div style="font-size:16px;font-weight:700;">{appointment_type}</div>
+                  <div style="margin-top:6px;font-size:14px;">{when}</div>
+                  <div style="margin-top:4px;font-size:14px;">with {provider_name}</div>
+                  <div style="margin-top:8px;font-size:13px;color:#0f766e;">{where}</div>
+                </div>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:0 22px 22px 22px;">
+                <div style="font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:1.4;color:#6b7280;text-align:center;">
+                  If you need to change or cancel, contact the practice directly.
+                </div>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+    """.strip()
+    send_email(to=to, subject=subject, html=html, text=text)
+
+
+def send_booking_cancelled(
+    *,
+    to: str,
+    patient_name: str,
+    practice_name: str,
+    location_name: str,
+    location_address: str,
+    appointment_type: str,
+    provider_name: str,
+    when: str,
+) -> None:
+    """Email the patient that their appointment was cancelled."""
+    subject = f"Your appointment was cancelled — {practice_name}"
+    where = location_name if not location_address else f"{location_name}, {location_address}"
+    text = (
+        f"Hi {patient_name},\n\n"
+        f"Your appointment with {practice_name} has been cancelled.\n\n"
+        f"{appointment_type} with {provider_name}\n"
+        f"{when}\n"
+        f"{where}\n\n"
+        "If you did not request this or want to reschedule, please contact the practice.\n"
+    )
+    html = f"""
+    <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="background:#f9fafb;padding:24px 12px;">
+      <tr>
+        <td align="center">
+          <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="600" style="max-width:600px;background:#ffffff;border-radius:16px;overflow:hidden;">
+            <tr>
+              <td style="padding:22px 22px 10px 22px;">
+                <div style="font-family:Arial,Helvetica,sans-serif;">
+                  <div style="font-size:12px;letter-spacing:0.08em;text-transform:uppercase;color:#6b7280;">NextHealth</div>
+                  <div style="margin-top:8px;font-size:22px;font-weight:700;color:#111827;">Appointment cancelled</div>
+                  <div style="margin-top:6px;font-size:14px;color:#4b5563;">{practice_name}</div>
+                </div>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:8px 22px 4px 22px;">
+                <div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.5;color:#374151;">
+                  Hi {patient_name}, your appointment has been cancelled.
+                </div>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:12px 22px 22px 22px;">
+                <div style="font-family:Arial,Helvetica,sans-serif;background:#fef2f2;border:1px solid #fecaca;border-radius:12px;padding:16px;color:#7f1d1d;">
+                  <div style="font-size:16px;font-weight:700;">{appointment_type}</div>
+                  <div style="margin-top:6px;font-size:14px;">{when}</div>
+                  <div style="margin-top:4px;font-size:14px;">with {provider_name}</div>
+                  <div style="margin-top:8px;font-size:13px;color:#991b1b;">{where}</div>
+                </div>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:0 22px 22px 22px;">
+                <div style="font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:1.4;color:#6b7280;text-align:center;">
+                  If you want to reschedule, contact the practice directly.
+                </div>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+    """.strip()
+    send_email(to=to, subject=subject, html=html, text=text)
+

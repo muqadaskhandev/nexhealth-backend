@@ -94,3 +94,5 @@ class PublicBookOut(BaseModel):
     message: str
     appointment_id: uuid.UUID
     confirmation: str
+    email_sent: bool = False
+    email: str = ""

@@ -366,6 +366,52 @@ async def create_appointment(
     return appt
 
 
+async def send_booking_confirmed_email(db: AsyncSession, ctx: StaffContext, appt: Appointment) -> None:
+    """Email the patient after staff confirms the appointment from the schedule."""
+    await _send_appointment_status_email(db, ctx, appt, kind="confirmed")
+
+
+async def send_booking_cancelled_email(db: AsyncSession, ctx: StaffContext, appt: Appointment) -> None:
+    """Email the patient after staff cancels the appointment from the schedule."""
+    await _send_appointment_status_email(db, ctx, appt, kind="cancelled")
+
+
+async def _send_appointment_status_email(
+    db: AsyncSession, ctx: StaffContext, appt: Appointment, *, kind: str
+) -> None:
+    patient = await db.get(Patient, appt.patient_id)
+    if patient is None or not (patient.email or "").strip():
+        return
+    practice = await db.get(Practice, ctx.practice_id)
+    location = await db.get(Location, ctx.location_id)
+    if practice is None or location is None:
+        return
+    from app.services import email_service
+
+    loc_address = ", ".join(
+        p for p in [location.address, location.city, location.state, location.zip_code] if p and str(p).strip()
+    )
+    when = appt.starts_at.astimezone(timezone.utc).strftime("%A, %B %d at %I:%M %p")
+    payload = dict(
+        to=patient.email.strip(),
+        patient_name=f"{patient.first_name} {patient.last_name}".strip(),
+        practice_name=practice.name,
+        location_name=location.name,
+        location_address=loc_address,
+        appointment_type=appt.appointment_type,
+        provider_name=appt.provider_name,
+        when=when,
+    )
+    try:
+        if kind == "cancelled":
+            email_service.send_booking_cancelled(**payload)
+        else:
+            email_service.send_booking_confirmation(**payload)
+    except email_service.EmailDeliveryError:
+        if settings.is_production:
+            raise
+
+
 async def update_appointment(
     db: AsyncSession, ctx: StaffContext, appt_id: uuid.UUID, data: AppointmentUpdate
 ) -> Appointment | None:
@@ -398,6 +444,12 @@ async def update_appointment(
         and appt.status == AppointmentStatus.CONFIRMED
     ):
         await notify_automatic_forms_on_confirmation(db, ctx, appt)
+        await send_booking_confirmed_email(db, ctx, appt)
+    if (
+        prior_status != AppointmentStatus.CANCELLED
+        and appt.status == AppointmentStatus.CANCELLED
+    ):
+        await send_booking_cancelled_email(db, ctx, appt)
     return appt
 
 

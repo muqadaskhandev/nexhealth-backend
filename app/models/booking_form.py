@@ -15,6 +15,7 @@ from app.database import Base
 class BookingFieldType(str, enum.Enum):
     TEXT = "text"
     NUMBER = "number"
+    DATE = "date"
     NOTE = "note"
     SINGLE_SELECT = "single_select"
     MULTI_SELECT = "multi_select"

@@ -1,6 +1,7 @@
 """Public online booking portal (unauthenticated)."""
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import date, datetime, timezone
 
@@ -40,6 +41,23 @@ def _is_valid_number(value: object) -> bool:
         return True
     except ValueError:
         return False
+
+
+def _is_iso_date(value: object) -> bool:
+    text = str(value or "").strip()
+    try:
+        date.fromisoformat(text)
+    except ValueError:
+        return False
+    return True
+
+
+def _is_date_question(field: BookingFormField) -> bool:
+    if field.field_type == BookingFieldType.DATE:
+        return True
+    if field.field_type not in (BookingFieldType.NUMBER, BookingFieldType.TEXT):
+        return False
+    return bool(re.search(r"\b(date|when|calendar|happened|dob|birth)\b", field.label.lower()))
 
 
 def _levenshtein(a: str, b: str) -> int:
@@ -406,6 +424,10 @@ async def _slot_available(
     )
     date_str = starts_at.date().isoformat()
     start_min = starts_at.hour * 60 + starts_at.minute
+    today = datetime.now(timezone.utc).date()
+    max_scan = (starts_at.date() - today).days + 1
+    if max_scan < 1:
+        return False
 
     openings = compute_openings(
         appointment_type=appointment_type,
@@ -413,8 +435,8 @@ async def _slot_available(
         slots=slots,
         blocks=blocks,
         appointments=appointments,
-        days_needed=1,
-        max_scan=60,
+        days_needed=max_scan,
+        max_scan=max_scan,
         provider_id=provider.id,
     )
     for day in openings:
@@ -510,12 +532,34 @@ async def book_appointment(
             if not isinstance(answer, dict) or not answer.get("authorized"):
                 raise ValueError(f"Please complete: {field.label}")
             continue
+        if _is_date_question(field):
+            if not _is_iso_date(answer):
+                raise ValueError(f"Please pick a date for: {field.label}")
+            continue
         if field.field_type == BookingFieldType.NUMBER:
             if not _is_valid_number(answer):
                 raise ValueError(f"Please enter a valid number for: {field.label}")
             continue
         if not str(answer or "").strip():
             raise ValueError(f"Please complete: {field.label}")
+
+    from app.services.field_validation_service import validate_booking_patient_fields
+
+    cleaned = validate_booking_patient_fields(
+        first_name=payload.first_name,
+        last_name=payload.last_name,
+        email=str(payload.email or ""),
+        phone=payload.phone,
+        zip_code=payload.zip_code,
+        patient_kind=payload.patient_kind,
+        booking_for=payload.booking_for,
+        guarantor_first_name=payload.guarantor_first_name,
+        guarantor_last_name=payload.guarantor_last_name,
+        guarantor_email=str(payload.guarantor_email or ""),
+        guarantor_phone=payload.guarantor_phone,
+        form_answers=payload.form_answers,
+        form_fields=form_fields,
+    )
 
     if payload.patient_kind == "existing":
         if not payload.dob:
@@ -526,11 +570,11 @@ async def book_appointment(
             db,
             practice.id,
             payload.location_id,
-            first_name=payload.first_name,
-            last_name=payload.last_name,
+            first_name=cleaned["first_name"],
+            last_name=cleaned["last_name"],
             dob=payload.dob,
-            email=str(payload.email),
-            phone=payload.phone,
+            email=cleaned["email"],
+            phone=cleaned["phone"],
         )
         if patient is None:
             raise PatientNotFoundError()
@@ -538,13 +582,13 @@ async def book_appointment(
         patient = Patient(
             practice_id=practice.id,
             location_id=payload.location_id,
-            first_name=payload.first_name.strip(),
-            last_name=payload.last_name.strip(),
+            first_name=cleaned["first_name"],
+            last_name=cleaned["last_name"],
             dob=payload.dob,
             gender=payload.gender.strip(),
-            email=str(payload.email).strip().lower() if payload.email else "",
-            phone=payload.phone,
-            address=payload.zip_code.strip(),
+            email=cleaned["email"],
+            phone=cleaned["phone"],
+            address=cleaned["zip_code"],
             synced=False,
             insurance_data=(
                 {"status": "unverified", "name": insurance_name, "source": "online_booking"}
@@ -607,10 +651,10 @@ async def book_appointment(
     if payload.booking_for != "self":
         booking_extra["booking_for"] = payload.booking_for
         booking_extra["guarantor"] = {
-            "first_name": payload.guarantor_first_name.strip(),
-            "last_name": payload.guarantor_last_name.strip(),
-            "email": str(payload.guarantor_email).strip(),
-            "phone": payload.guarantor_phone.strip(),
+            "first_name": cleaned["guarantor_first_name"],
+            "last_name": cleaned["guarantor_last_name"],
+            "email": cleaned["guarantor_email"],
+            "phone": cleaned["guarantor_phone"],
         }
 
     meta = appointment_rules_service.build_appointment_meta(
@@ -663,4 +707,6 @@ async def book_appointment(
         "message": "Your appointment has been booked",
         "appointment_id": appt.id,
         "confirmation": f"{appt_type.name} with {provider.name} on {when}",
+        "email_sent": False,
+        "email": patient.email or "",
     }

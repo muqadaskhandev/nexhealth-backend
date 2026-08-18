@@ -749,3 +749,129 @@ def progress_counts(fields: list[dict], draft: dict[str, Any]) -> tuple[int, int
         if fid and _has_value(f, draft.get(fid)):
             answered += 1
     return answered, len(collectible)
+
+
+def _validate_email(value: str, *, required: bool) -> tuple[bool, str | None, str]:
+    val = value.strip().lower()
+    if not val:
+        return (False, "Please enter a valid email address.", "") if required else (True, None, "")
+    ok, err, normalized = validate_field_value(
+        {"type": "email", "label": "email", "required": required}, val
+    )
+    return ok, err, str(normalized or "")
+
+
+def _validate_phone(value: str, *, required: bool) -> tuple[bool, str | None, str]:
+    val = value.strip()
+    if not val:
+        return (False, "Please enter a valid phone number.", "") if required else (True, None, "")
+    ok, err, normalized = validate_field_value(
+        {"type": "phone", "label": "phone", "required": required}, val
+    )
+    return ok, err, str(normalized or "")
+
+
+def _validate_zip(value: str, *, required: bool) -> tuple[bool, str | None, str]:
+    val = value.strip()
+    if not val:
+        return (False, "Please enter a zip code.", "") if required else (True, None, "")
+    if _is_junk(val) or not re.fullmatch(r"\d{4,10}", val):
+        return False, "Please enter a valid zip code using numbers only.", ""
+    if re.fullmatch(r"(\d)\1{3,}", val):
+        return False, "Please enter a real zip code.", ""
+    return True, None, val
+
+
+def validate_booking_patient_fields(
+    *,
+    first_name: str,
+    last_name: str,
+    email: str,
+    phone: str,
+    zip_code: str,
+    patient_kind: str,
+    booking_for: str = "self",
+    guarantor_first_name: str = "",
+    guarantor_last_name: str = "",
+    guarantor_email: str = "",
+    guarantor_phone: str = "",
+    form_answers: dict[str, Any] | None = None,
+    form_fields: list[Any] | None = None,
+) -> dict[str, str]:
+    """Reject junk names/contact on online booking. Raises ValueError with a patient-facing message."""
+    need_full = patient_kind == "new"
+
+    ok, err, first = _validate_name("first name", first_name)
+    if not ok:
+        raise ValueError(err)
+    ok, err, last = _validate_name("last name", last_name)
+    if not ok:
+        raise ValueError(err)
+
+    ok, err, email_n = _validate_email(email, required=need_full)
+    if not ok:
+        raise ValueError(err)
+    ok, err, phone_n = _validate_phone(phone, required=need_full)
+    if not ok:
+        raise ValueError(err)
+    if patient_kind == "existing" and not email_n and not phone_n:
+        raise ValueError("Please enter the email or phone number we have on file.")
+
+    zip_n = zip_code.strip()
+    if need_full:
+        ok, err, zip_n = _validate_zip(zip_code, required=True)
+        if not ok:
+            raise ValueError(err)
+
+    if booking_for != "self":
+        ok, err, g_first = _validate_name("guarantor first name", guarantor_first_name)
+        if not ok:
+            raise ValueError(err)
+        ok, err, g_last = _validate_name("guarantor last name", guarantor_last_name)
+        if not ok:
+            raise ValueError(err)
+        ok, err, g_email = _validate_email(guarantor_email, required=False)
+        if not ok:
+            raise ValueError(err)
+        ok, err, g_phone = _validate_phone(guarantor_phone, required=False)
+        if not ok:
+            raise ValueError(err)
+        if not g_email and not g_phone:
+            raise ValueError("Please enter the guarantor's email or phone number.")
+    else:
+        g_first = g_last = g_email = g_phone = ""
+
+    for field in form_fields or []:
+        ftype = getattr(field, "field_type", None)
+        ftype_val = ftype.value if hasattr(ftype, "value") else str(ftype or "text")
+        if ftype_val in ("note", "payment", "single_select", "multi_select", "date"):
+            continue
+        label = getattr(field, "label", "this question")
+        fid = str(getattr(field, "id", ""))
+        raw = (form_answers or {}).get(fid)
+        if raw is None or raw == "":
+            continue
+        text = str(raw).strip() if not isinstance(raw, (list, dict)) else ""
+        if not text:
+            continue
+        if ftype_val == "number":
+            continue
+        ok, err, _ = validate_field_value(
+            {"type": "text", "label": label, "required": bool(getattr(field, "required", False))},
+            text,
+        )
+        if not ok:
+            raise ValueError(err)
+
+    return {
+        "first_name": str(first),
+        "last_name": str(last),
+        "email": email_n,
+        "phone": phone_n,
+        "zip_code": zip_n,
+        "guarantor_first_name": str(g_first),
+        "guarantor_last_name": str(g_last),
+        "guarantor_email": g_email,
+        "guarantor_phone": g_phone,
+    }
+

@@ -241,6 +241,12 @@ def _normalize_email(value: Any) -> str:
     return str(value or "").strip().lower()
 
 
+def _normalize_text(value: Any) -> str:
+    import re
+
+    return re.sub(r"\s+", " ", str(value or "").strip()).lower()
+
+
 def _normalize_dob(value: Any) -> str:
     # agent/forms validation normalizes DOB as ISO date string (YYYY-MM-DD)
     if value is None or value == "":
@@ -268,9 +274,58 @@ def patient_identity_mismatch_message(patient: Patient, field: dict, answers_val
     if not target or not isinstance(target, str):
         return None
 
-    # Only enforce these specific patient identity fields.
-    if target not in {"patient.email", "patient.phone", "patient.date_of_birth", "patient.dob"}:
+    # Only enforce selected patient fields that must match existing record.
+    enforced_targets = {
+        "patient.email",
+        "patient.phone",
+        "patient.date_of_birth",
+        "patient.dob",
+        "patient.first_name",
+        "patient.last_name",
+        "patient.address",
+        "patient.insurance",
+    }
+    if target not in enforced_targets:
         return None
+
+    if target == "patient.first_name":
+        existing = getattr(patient, "first_name", None)
+        if not existing:
+            return None
+        a = _normalize_text(answers_value)
+        b = _normalize_text(existing)
+        if a and b and a != b:
+            return "Please enter the same first name we have on file for you."
+
+    if target == "patient.last_name":
+        existing = getattr(patient, "last_name", None)
+        if not existing:
+            return None
+        a = _normalize_text(answers_value)
+        b = _normalize_text(existing)
+        if a and b and a != b:
+            return "Please enter the same last name we have on file for you."
+
+    if target == "patient.address":
+        existing = getattr(patient, "address", None)
+        if not existing:
+            return None
+        a = _normalize_text(answers_value)
+        b = _normalize_text(existing)
+        if a and b and a != b:
+            return "Please enter the same address we have on file for you."
+
+    if target == "patient.insurance":
+        existing = getattr(patient, "insurance_data", None) or {}
+        # If no insurance is stored yet, do not block.
+        if not existing:
+            return None
+        # Compare human-readable summary when available; otherwise compare normalized string.
+        existing_summary = existing.get("summary") if isinstance(existing, dict) else None
+        a = _normalize_text(answers_value if not isinstance(answers_value, dict) else answers_value.get("summary", ""))
+        b = _normalize_text(existing_summary if existing_summary is not None else str(existing))
+        if a and b and a != b:
+            return "Please enter the same insurance information we have on file for you."
 
     # If we don't have a value on file yet, don't block intake.
     if target in {"patient.email"}:

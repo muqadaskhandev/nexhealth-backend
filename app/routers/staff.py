@@ -280,6 +280,7 @@ async def appointment_details(
         appointment=_appt_out(data["appointment"], data["patient"]),
         booked_via=data["booked_via"],
         booking_answers=data["booking_answers"],
+        booking_transcript=data["booking_transcript"],
         forms=data["forms"],
         receipts=data["receipts"],
     )

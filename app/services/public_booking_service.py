@@ -607,7 +607,11 @@ async def book_appointment(
             db,
             patient_id=patient.id,
             activity_type=ActivityType.NOTE,
-            title="Patient record created via online booking",
+            title=(
+                "Patient record created via Angelina"
+                if (payload.booking_channel or "").strip().lower() == "agent"
+                else "Patient record created via online booking"
+            ),
         )
 
     if payload.patient_kind == "existing":
@@ -652,11 +656,19 @@ async def book_appointment(
     channel = (payload.booking_channel or "form").strip().lower()
     if channel not in ("agent", "form"):
         channel = "form"
+    transcript = []
+    for turn in payload.booking_transcript[:80]:
+        role = str(turn.get("role") or "").strip().lower()
+        content = str(turn.get("content") or "").strip()
+        if role not in ("agent", "patient") or not content:
+            continue
+        transcript.append({"role": role, "content": content[:4000]})
     booking_extra: dict = {
         "provider_id": str(provider.id),
         "form_answers": payload.form_answers,
         "form_answers_labeled": labeled_answers,
         "booking_channel": channel,
+        "booking_transcript": transcript,
     }
     if insurance_name:
         booking_extra["insurance_name"] = insurance_name
@@ -678,6 +690,20 @@ async def book_appointment(
             "email": cleaned["guarantor_email"],
             "phone": cleaned["guarantor_phone"],
         }
+    booking_extra["patient_snapshot"] = {
+        "first_name": cleaned["first_name"],
+        "last_name": cleaned["last_name"],
+        "dob": payload.dob.isoformat() if payload.dob else "",
+        "email": cleaned["email"],
+        "phone": cleaned["phone"],
+        "zip_code": cleaned["zip_code"],
+        "gender": (payload.gender or "").strip(),
+        "patient_kind": payload.patient_kind,
+        "booking_for": payload.booking_for,
+        "insurance_name": insurance_name or "",
+        "call_text_consent": bool(payload.call_text_consent),
+        "guarantor": booking_extra.get("guarantor"),
+    }
 
     meta = appointment_rules_service.build_appointment_meta(
         source="online_booking",
@@ -704,7 +730,11 @@ async def book_appointment(
         db,
         patient_id=patient.id,
         activity_type=ActivityType.APPOINTMENT,
-        title=f"Online appointment booked — {appt_type.name}",
+        title=(
+            f"Online appointment booked with Angelina — {appt_type.name}"
+            if channel == "agent"
+            else f"Online appointment booked by patient — {appt_type.name}"
+        ),
         meta={"appointment_id": str(appt.id), **meta},
     )
 

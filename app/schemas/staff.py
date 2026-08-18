@@ -141,10 +141,16 @@ class AppointmentReceiptOut(BaseModel):
     details: str = ""
 
 
+class AppointmentChatTurnOut(BaseModel):
+    role: str
+    content: str
+
+
 class AppointmentDetailsOut(BaseModel):
     appointment: AppointmentOut
     booked_via: str
     booking_answers: list[AppointmentBookingAnswerOut] = Field(default_factory=list)
+    booking_transcript: list[AppointmentChatTurnOut] = Field(default_factory=list)
     forms: list[AppointmentFormItemOut] = Field(default_factory=list)
     receipts: list[AppointmentReceiptOut] = Field(default_factory=list)
 

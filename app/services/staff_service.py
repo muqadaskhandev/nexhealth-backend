@@ -457,11 +457,93 @@ async def update_appointment(
 
 def _booked_via_label(meta: dict) -> str:
     channel = str(meta.get("booking_channel") or "").strip().lower()
-    if channel == "agent":
+    transcript = meta.get("booking_transcript") or []
+    if channel == "agent" or transcript:
         return "angelina"
-    if channel == "form" or str(meta.get("source") or "") == "online_booking":
+    if channel == "form":
+        return "patient"
+    if str(meta.get("source") or "") == "online_booking":
         return "patient"
     return "staff"
+
+
+_SNAPSHOT_LABELS = (
+    ("first_name", "First name"),
+    ("last_name", "Last name"),
+    ("dob", "Date of birth"),
+    ("email", "Email"),
+    ("phone", "Phone"),
+    ("zip_code", "Zip code"),
+    ("gender", "Legal sex"),
+    ("patient_kind", "Patient type"),
+    ("booking_for", "Booking for"),
+    ("insurance_name", "Insurance"),
+    ("call_text_consent", "Call / text consent"),
+)
+
+
+def _format_snapshot_value(key: str, value: object) -> object:
+    if key == "call_text_consent":
+        return "Yes" if value else "No"
+    if key == "patient_kind":
+        raw = str(value or "").strip().lower()
+        if raw == "new":
+            return "New patient"
+        if raw == "existing":
+            return "Returning patient"
+    if key == "booking_for":
+        raw = str(value or "").strip().lower()
+        if raw == "self":
+            return "Self"
+        if raw == "child":
+            return "Child"
+        if raw == "other":
+            return "Someone else"
+    return value
+
+
+def _answers_from_snapshot(snapshot: dict) -> list[dict]:
+    rows: list[dict] = []
+    for key, label in _SNAPSHOT_LABELS:
+        raw = snapshot.get(key)
+        if raw is None or raw == "" or raw is False:
+            continue
+        rows.append(
+            {
+                "id": f"patient:{key}",
+                "label": label,
+                "field_type": "text",
+                "value": _format_snapshot_value(key, raw),
+            }
+        )
+    guarantor = snapshot.get("guarantor") if isinstance(snapshot.get("guarantor"), dict) else None
+    if guarantor:
+        gname = f"{guarantor.get('first_name') or ''} {guarantor.get('last_name') or ''}".strip()
+        if gname:
+            rows.append({"id": "patient:guarantor_name", "label": "Guarantor", "field_type": "text", "value": gname})
+        if guarantor.get("email"):
+            rows.append({"id": "patient:guarantor_email", "label": "Guarantor email", "field_type": "text", "value": guarantor["email"]})
+        if guarantor.get("phone"):
+            rows.append({"id": "patient:guarantor_phone", "label": "Guarantor phone", "field_type": "text", "value": guarantor["phone"]})
+    return rows
+
+
+def _snapshot_from_patient(patient: Patient, meta: dict) -> dict:
+    insurance = meta.get("insurance_name") or (patient.insurance_data or {}).get("name") or ""
+    return {
+        "first_name": patient.first_name,
+        "last_name": patient.last_name,
+        "dob": patient.dob.isoformat() if patient.dob else "",
+        "email": patient.email,
+        "phone": patient.phone,
+        "zip_code": patient.address,
+        "gender": patient.gender,
+        "patient_kind": "",
+        "booking_for": meta.get("booking_for") or "",
+        "insurance_name": insurance,
+        "call_text_consent": bool(meta.get("call_text_consent")),
+        "guarantor": meta.get("guarantor") if isinstance(meta.get("guarantor"), dict) else None,
+    }
 
 
 def _format_payment_details(value: object) -> str:
@@ -492,6 +574,10 @@ async def get_appointment_details(db: AsyncSession, ctx: StaffContext, appt_id: 
         return None
     appt, patient = row
     meta = dict(appt.meta or {})
+    snapshot = meta.get("patient_snapshot") if isinstance(meta.get("patient_snapshot"), dict) else None
+    if not snapshot:
+        snapshot = _snapshot_from_patient(patient, meta)
+    patient_answers = _answers_from_snapshot(snapshot)
 
     labeled = list(meta.get("form_answers_labeled") or [])
     if not labeled:
@@ -523,7 +609,7 @@ async def get_appointment_details(db: AsyncSession, ctx: StaffContext, appt_id: 
                 }
             )
 
-    booking_answers = [
+    custom_answers = [
         {
             "id": str(item.get("id") or ""),
             "label": str(item.get("label") or "Question"),
@@ -533,6 +619,10 @@ async def get_appointment_details(db: AsyncSession, ctx: StaffContext, appt_id: 
         for item in labeled
         if item.get("value") not in (None, "", [])
     ]
+    seen_labels = {str(row["label"]).strip().lower() for row in patient_answers}
+    booking_answers = patient_answers + [
+        row for row in custom_answers if str(row["label"]).strip().lower() not in seen_labels
+    ]
 
     form_rows = await db.execute(
         select(FormRequest, FormTemplate)
@@ -540,30 +630,16 @@ async def get_appointment_details(db: AsyncSession, ctx: StaffContext, appt_id: 
         .where(
             FormRequest.practice_id == ctx.practice_id,
             FormRequest.location_id == ctx.location_id,
-            FormRequest.appointment_id == appt.id,
+            FormRequest.patient_id == patient.id,
             FormRequest.archived_at.is_(None),
+            or_(
+                FormRequest.appointment_id == appt.id,
+                FormRequest.appointment_id.is_(None),
+            ),
         )
         .order_by(FormRequest.sent_at.desc())
     )
     form_pairs = list(form_rows.all())
-    if not form_pairs:
-        window_start = (appt.created_at or appt.starts_at) - timedelta(hours=12)
-        window_end = (appt.created_at or appt.starts_at) + timedelta(days=2)
-        fallback_rows = await db.execute(
-            select(FormRequest, FormTemplate)
-            .join(FormTemplate, FormTemplate.id == FormRequest.form_template_id)
-            .where(
-                FormRequest.practice_id == ctx.practice_id,
-                FormRequest.location_id == ctx.location_id,
-                FormRequest.patient_id == patient.id,
-                FormRequest.appointment_id.is_(None),
-                FormRequest.archived_at.is_(None),
-                FormRequest.sent_at >= window_start,
-                FormRequest.sent_at <= window_end,
-            )
-            .order_by(FormRequest.sent_at.desc())
-        )
-        form_pairs = list(fallback_rows.all())
     request_ids = [req.id for req, _tpl in form_pairs]
 
     submissions_by_req: dict[uuid.UUID, FormSubmission] = {}
@@ -649,11 +725,18 @@ async def get_appointment_details(db: AsyncSession, ctx: StaffContext, appt_id: 
             }
         )
 
+    transcript = [
+        {"role": str(t.get("role") or "agent"), "content": str(t.get("content") or "")}
+        for t in (meta.get("booking_transcript") or [])
+        if str(t.get("content") or "").strip()
+    ]
+
     return {
         "appointment": appt,
         "patient": patient,
         "booked_via": _booked_via_label(meta),
         "booking_answers": booking_answers,
+        "booking_transcript": transcript,
         "forms": forms,
         "receipts": receipts,
     }

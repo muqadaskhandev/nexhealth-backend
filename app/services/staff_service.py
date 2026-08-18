@@ -643,6 +643,8 @@ def _form_field(
     sync_target: str | None = None,
     placeholder: str = "",
     page: int = 1,
+    conditional_field_id: str | None = None,
+    conditional_value: str = "",
 ) -> dict:
     return {
         "id": fid,
@@ -653,8 +655,8 @@ def _form_field(
         "page": page,
         "min_length": None,
         "max_length": None,
-        "conditional_field_id": None,
-        "conditional_value": "",
+        "conditional_field_id": conditional_field_id,
+        "conditional_value": conditional_value,
         "sync_target": sync_target,
         "placeholder": placeholder,
     }
@@ -713,7 +715,15 @@ _STARTER_FORMS: list[dict] = [
         "is_default": False,
         "fields": [
             _form_field("has-insurance", "radio", "Do you have dental insurance?", options=["Yes", "No"]),
-            _form_field("insurance", "insurance", "Insurance provider", required=False, sync_target="patient.insurance"),
+            _form_field(
+                "insurance",
+                "insurance",
+                "Insurance provider",
+                required=False,
+                sync_target="patient.insurance",
+                conditional_field_id="has-insurance",
+                conditional_value="Yes",
+            ),
             _form_field("card-front", "file", "Insurance card photo", required=False),
             _form_field("payment", "payment", "How will you pay today?", required=False, sync_target="patient.payment_preference"),
         ],
@@ -758,11 +768,26 @@ async def _ensure_named_form_template(
         next_fields: list[dict] = []
         for field in fields:
             src = desired.get(field.get("id"))
-            if src and src.get("sync_target") and field.get("sync_target") != src.get("sync_target"):
-                next_fields.append({**field, "sync_target": src["sync_target"]})
-                changed = True
-            else:
+            if not src:
                 next_fields.append(field)
+                continue
+
+            next_field = dict(field)
+            if src.get("sync_target") and field.get("sync_target") != src.get("sync_target"):
+                next_field["sync_target"] = src["sync_target"]
+                changed = True
+
+            # Keep starter conditional logic in sync for known fields.
+            src_cond_id = src.get("conditional_field_id")
+            src_cond_val = src.get("conditional_value", "")
+            if field.get("conditional_field_id") != src_cond_id:
+                next_field["conditional_field_id"] = src_cond_id
+                changed = True
+            if field.get("conditional_value", "") != src_cond_val:
+                next_field["conditional_value"] = src_cond_val
+                changed = True
+
+            next_fields.append(next_field)
         if changed:
             tpl.fields = next_fields
         return
